@@ -1,6 +1,6 @@
-// One scalar pair per texel: (flux to the right neighbor, flux to the left neighbor).
-// The leftmost/rightmost columns have no neighbor on one side and are always
-// written 0 there - see fluxUpdateFragment.glsl.
+// One vec4 per texel: (flux to the right, left, up, down neighbor) = (+x, -x, +y, -y).
+// Edge columns have no neighbor on some sides and always write 0 there -
+// see fluxUpdateFragment.glsl.
 export class FluxFBO {
     constructor(gl, columnCount) {
         this.gl = gl;
@@ -15,7 +15,7 @@ export class FluxFBO {
 
         this.texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, this.columnCount, 1, 0, gl.RG, gl.FLOAT, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.columnCount, this.columnCount, 0, gl.RGBA, gl.FLOAT, null);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -34,7 +34,7 @@ export class FluxFBO {
     bind() {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-        gl.viewport(0, 0, this.columnCount, 1);
+        gl.viewport(0, 0, this.columnCount, this.columnCount);
     }
 
     unbind() {

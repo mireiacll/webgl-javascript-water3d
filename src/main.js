@@ -6,18 +6,19 @@ import { ScreenRenderer } from './core/ScreenRenderer.js';
 import { WaterPingPongBuffer } from './core/WaterPingPongBuffer.js';
 import { buildTerrainHeightTexture } from './core/TerrainHeightTextureBuilder.js';
 import { buildWaterHeightTexture } from './core/WaterHeightTextureBuilder.js';
+import { Camera } from './camera/Camera.js';
+import { CameraController } from './camera/CameraController.js';
 
-const DEFAULT_COLUMN_COUNT = 200;
-const DEFAULT_WORLD_WIDTH = 200.0;          // total tank width in meters - column width is derived as worldWidth / columnCount
+const DEFAULT_COLUMN_COUNT = 100;           // columns per SIDE - the tank is columnCount x columnCount
+const DEFAULT_WORLD_WIDTH = 200.0;          // side of the square tank in meters - column width is derived as worldWidth / columnCount
 const DEFAULT_DAMPING = 0.88;               // per-frame flux bleed, 1.0 = none
 const DEFAULT_DT = 0.02;                    // fixed sim step per frame - this IS the simulation speed control
 const CFL_NUMBER = 0.5;
 const GRAVITY = 9.8;
-const DEFAULT_MAX_HEIGHT_DISPLAY = 25.0;    // world height (terrain + water) mapped to the top of the window - purely a display setting, doesn't clip the sim
 const DEFAULT_TERRAIN_HEIGHT_SCALE = 10.0;  // height of the tallest terrain peak
 const DEFAULT_TERRAIN_SEED = 1;
-const DEFAULT_DROP_WIDTH = 20.0;            // width of the dropped water block, in meters
-const DEFAULT_DROP_AREA_M2 = 300;
+const DEFAULT_DROP_WIDTH = 20.0;            // side of the dropped square water block, in meters
+const DEFAULT_DROP_VOLUME_M3 = 6000;
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
 const TERRAIN_COLOR = [0.45, 0.35, 0.25];
@@ -33,7 +34,10 @@ if (!gl) {
 if (!gl.getExtension('EXT_color_buffer_float')) {
     throw new Error('EXT_color_buffer_float is required (float render targets) and is not supported here');
 }
-gl.disable(gl.DEPTH_TEST);
+// the sim passes render into FBOs with no depth buffer, so the depth test is a no-op for them -
+// it only matters for the final column draw
+gl.enable(gl.DEPTH_TEST);
+gl.depthFunc(gl.LEQUAL);
 
 function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -58,16 +62,24 @@ const params = {
     worldWidth: DEFAULT_WORLD_WIDTH,
     damping: DEFAULT_DAMPING,
     dt: DEFAULT_DT,
-    maxHeightDisplay: DEFAULT_MAX_HEIGHT_DISPLAY,
     terrainHeightScale: DEFAULT_TERRAIN_HEIGHT_SCALE,
     dropPositionX: DEFAULT_WORLD_WIDTH / 2,  // meters, where the water block is centered
-    dropWidth: DEFAULT_DROP_WIDTH,           // meters
-    dropAreaM2: DEFAULT_DROP_AREA_M2,        // cross-sectional area (depth x width) of the block - depth is derived from this + width
+    dropPositionY: DEFAULT_WORLD_WIDTH / 2,
+    dropWidth: DEFAULT_DROP_WIDTH,           // meters, side of the square block
+    dropVolumeM3: DEFAULT_DROP_VOLUME_M3,    // total water in the block - depth is derived from this + the block's footprint
     showOutline: true,
 };
 
 let terrainSeed = DEFAULT_TERRAIN_SEED;
 let regenerateTerrainRequested = false;
+
+// ---- camera ----
+const camera = new Camera();
+camera.lookAt(
+    [params.worldWidth / 2, params.worldWidth / 2, params.terrainHeightScale * 0.5],
+    params.worldWidth * 1.1, 0, -0.7,
+);
+const cameraController = new CameraController(canvas, camera);
 
 // builds the column-count-sized resources - called on startup, on every column
 // count change, and on every "Regenerate Terrain" click
@@ -81,10 +93,11 @@ function buildSimResources(columnCount, worldWidth, terrainHeightScale, seed) {
 }
 
 // (re)seeds the water sim for a fresh run: water depth is 0 everywhere except
-// the dropped block [dropStartCol, dropEndCol), which starts uniformly at dropDepth -
-// flux starts at zero since there's no meaningful "last frame" yet
-function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCol, dropDepth) {
-    const seedTexture = buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropDepth);
+// the dropped block (columns [dropStartCol, dropEndCol) x rows [dropStartRow, dropEndRow)),
+// which starts uniformly at dropDepth - flux starts at zero since there's no
+// meaningful "last frame" yet
+function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth) {
+    const seedTexture = buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     waterPPB.current().bind();
     screenRenderer.render(seedTexture);
     waterPPB.current().unbind();
@@ -114,7 +127,7 @@ const regenerateTerrainBtn = el('regenerateTerrainBtn');
 const lockedWhileRunningIds = [
     'columnCount', 'worldWidth', 'damping',
     'terrainHeightScale', 'regenerateTerrainBtn',
-    'dropPositionX', 'dropWidth', 'dropAreaM2',
+    'dropPositionX', 'dropPositionY', 'dropWidth', 'dropVolumeM3',
 ];
 
 function bindSlider(id, paramKey, format = (v) => v) {
@@ -134,10 +147,11 @@ bindSlider('worldWidth', 'worldWidth', (v) => v.toFixed(1));
 bindSlider('damping', 'damping', (v) => v.toFixed(3));
 bindSlider('terrainHeightScale', 'terrainHeightScale', (v) => v.toFixed(1));
 bindSlider('dropPositionX', 'dropPositionX', (v) => v.toFixed(1));
+bindSlider('dropPositionY', 'dropPositionY', (v) => v.toFixed(1));
 bindSlider('dropWidth', 'dropWidth', (v) => v.toFixed(1));
-bindSlider('dropAreaM2', 'dropAreaM2', (v) => v.toFixed(2));
-bindSlider('maxHeightDisplay', 'maxHeightDisplay', (v) => v.toFixed(1));
+bindSlider('dropVolumeM3', 'dropVolumeM3', (v) => v.toFixed(0));
 el('dropPositionX').max = String(params.worldWidth);
+el('dropPositionY').max = String(params.worldWidth);
 el('dropWidth').max = String(params.worldWidth);
 
 el('showOutline').checked = params.showOutline;
@@ -147,8 +161,8 @@ startBtn.addEventListener('click', () => {
     if (state !== SimState.IDLE) return;
     // resources are already sized correctly - the block is already seeded by the
     // IDLE preview each frame, this just kicks off the flux/height passes on it
-    const { dropStartCol, dropEndCol, dropDepth } = computeDropRegion();
-    resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropDepth);
+    const { dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = computeDropRegion();
+    resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     state = SimState.RUNNING;
 });
 
@@ -167,19 +181,26 @@ regenerateTerrainBtn.addEventListener('click', () => {
     regenerateTerrainRequested = true;
 });
 
+// the drop is a square block of columns centered on (dropPositionX, dropPositionY).
+// its edges snap outward to whole columns, so the real footprint can be a bit bigger than
+// dropWidth x dropWidth (and gets cut off where it hangs over the tank edge)
 function computeDropRegion() {
     const columnWidth = params.worldWidth / params.columnCount;
+    const half = params.dropWidth / 2;
+    const clampIndex = (v) => Math.max(0, Math.min(params.columnCount, v));
 
-    let dropStartCol = Math.floor((params.dropPositionX - params.dropWidth / 2) / columnWidth);
-    let dropEndCol = Math.ceil((params.dropPositionX + params.dropWidth / 2) / columnWidth);
-    dropStartCol = Math.max(0, Math.min(params.columnCount, dropStartCol));
-    dropEndCol = Math.max(dropStartCol, Math.min(params.columnCount, dropEndCol));
+    const dropStartCol = clampIndex(Math.floor((params.dropPositionX - half) / columnWidth));
+    const dropEndCol = Math.max(dropStartCol, clampIndex(Math.ceil((params.dropPositionX + half) / columnWidth)));
+    const dropStartRow = clampIndex(Math.floor((params.dropPositionY - half) / columnWidth));
+    const dropEndRow = Math.max(dropStartRow, clampIndex(Math.ceil((params.dropPositionY + half) / columnWidth)));
 
-    // depth needed so that (uniform depth) x (actual quantized width) = requested drop area
-    const dropWidthActual = (dropEndCol - dropStartCol) * columnWidth;
-    const dropDepth = dropWidthActual > 0 ? params.dropAreaM2 / dropWidthActual : 0;
+    // depth needed so that (uniform depth) x (actual quantized footprint) = requested drop volume
+    const dropSizeX = (dropEndCol - dropStartCol) * columnWidth;
+    const dropSizeY = (dropEndRow - dropStartRow) * columnWidth;
+    const dropFootprint = dropSizeX * dropSizeY;
+    const dropDepth = dropFootprint > 0 ? params.dropVolumeM3 / dropFootprint : 0;
 
-    return { columnWidth, dropStartCol, dropEndCol, dropWidthActual, dropDepth };
+    return { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropSizeX, dropSizeY, dropDepth };
 }
 
 function updatePanel(dropInfo, substeps, subDt) {
@@ -196,7 +217,8 @@ function updatePanel(dropInfo, substeps, subDt) {
     cflInfo.textContent = `CFL: ${substeps} substep${substeps === 1 ? '' : 's'} per frame (${subDt.toFixed(5)} s each)`;
     columnWidthInfo.textContent = `-> column width d = ${dropInfo.columnWidth.toFixed(3)} m`;
     dropDepthInfo.textContent = `-> depth per column = ${dropInfo.dropDepth.toFixed(3)} m ` +
-        `(spanning ${dropInfo.dropEndCol - dropInfo.dropStartCol} columns, ${dropInfo.dropWidthActual.toFixed(1)} m)`;
+        `(spanning ${dropInfo.dropEndCol - dropInfo.dropStartCol} x ${dropInfo.dropEndRow - dropInfo.dropStartRow} columns, ` +
+        `${dropInfo.dropSizeX.toFixed(1)} x ${dropInfo.dropSizeY.toFixed(1)} m)`;
 }
 
 // ---- render loop ----
@@ -205,7 +227,7 @@ function frame() {
 
     // d is derived, not set directly
     const dropInfo = computeDropRegion();
-    const { columnWidth, dropStartCol, dropEndCol, dropDepth } = dropInfo;
+    const { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = dropInfo;
     const pipeArea = columnWidth * columnWidth;   // d*d
     const pipeLength = columnWidth;                // d
     const columnArea = columnWidth * columnWidth;   // d*d - same d, footprint area
@@ -236,7 +258,7 @@ function frame() {
         // reseeding every IDLE frame with the live slider values doubles as the
         // "preview" - dragging position/width/volume shows the pending block directly,
         // already at the depth it would actually be dropped at
-        resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropDepth);
+        resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     }
 
     if (state === SimState.RUNNING) {
@@ -253,7 +275,7 @@ function frame() {
             heightUpdateRenderer.render(
                 sim.waterPPB.current().getTexture(), sim.fluxPPB.current().getTexture(),
                 params.columnCount, columnArea, subDt, 0,
-                0, 0, 0,
+                0, 0, 0, 0, 0,
             );
             sim.waterPPB.next().unbind();
             sim.waterPPB.swap();
@@ -261,16 +283,22 @@ function frame() {
     }
     // when STOPPED: skip the two passes above, draw keeps showing the frozen state
 
+    // the pick plane follows the terrain so panning/zooming lands about where you point
+    cameraController.groundZ = params.terrainHeightScale * 0.5;
+
     // draw the terrain, then the water on top of it
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(0.05, 0.05, 0.08, 1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    sim.columnRenderer.setCamera(camera.getViewProjMatrix(canvas.width / canvas.height));
     sim.columnRenderer.setGapFraction(params.showOutline ? 0.1 : 0.0);
-    sim.columnRenderer.renderTerrain(sim.terrainTexture, params.maxHeightDisplay, ...TERRAIN_COLOR);
-    sim.columnRenderer.renderWater(sim.terrainTexture, sim.waterPPB.current().getTexture(), params.maxHeightDisplay, ...WATER_COLOR);
+    const waterTexture = sim.waterPPB.current().getTexture();
+    sim.columnRenderer.renderTerrain(sim.terrainTexture, params.worldWidth, ...TERRAIN_COLOR);
+    sim.columnRenderer.renderWater(sim.terrainTexture, waterTexture, params.worldWidth, ...WATER_COLOR);
     if (params.showOutline) {
-        sim.columnRenderer.renderWaterOutline(sim.terrainTexture, sim.waterPPB.current().getTexture(), params.maxHeightDisplay, ...OUTLINE_COLOR);
+        sim.columnRenderer.renderWaterOutline(sim.terrainTexture, waterTexture, params.worldWidth, ...OUTLINE_COLOR);
     }
 
     updatePanel(dropInfo, substeps, subDt);

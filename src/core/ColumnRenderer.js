@@ -1,134 +1,147 @@
 import { ColumnShader } from './ColumnShader.js';
 
-const QUAD_CORNERS = [
-    0, 0,   1, 0,   1, 1,
-    0, 0,   1, 1,   0, 1,
-];
+const LAYER_TERRAIN = 0;
+const LAYER_WATER = 1;
 
-const OUTLINE_CORNERS = [
-    0, 0,   1, 0,     // bottom edge
-    1, 0,   1, 1,     // right edge
-    1, 1,   0, 1,     // top edge
-    0, 1,   0, 0,     // left edge
-];
+const BOX_VERTEX_COUNT = 30;   // 5 faces (no bottom - nobody sees it) x 2 triangles x 3 vertices
+const EDGE_VERTEX_COUNT = 16;  // 8 edges x 2 vertices
 
-// Draws each column as a filled vertical bar, in two layers:
-// 1. the fixed terrain (floor -> terrain height)
-// 2. the water sitting on top of it (terrain height -> terrain height + water depth)
+// Draws the whole columnCount x columnCount grid as instanced boxes: one instance
+// per column, height and position come from the textures in the vertex shader,
+// so nothing gets uploaded per frame.
 export class ColumnRenderer {
     constructor(gl, columnCount) {
         this.gl = gl;
-        this.shader = new ColumnShader(gl);
         this.columnCount = columnCount;
-        this.gapFraction = 0.1;
+        this.gapFraction = 0.0;
+        this.viewProj = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
-        const vaoA = this._buildVao(QUAD_CORNERS, 6);
-        this.vao = vaoA.vao;
-        this.vbo = vaoA.vbo;
+        this.shader = new ColumnShader(gl);
 
-        const vaoB = this._buildVao(OUTLINE_CORNERS, 8);
-        this.outlineVao = vaoB.vao;
-        this.outlineVbo = vaoB.vbo;
+        this._buildBox();
+        this._buildEdges();
     }
 
-    _buildVao(cornerTable, verticesPerColumn) {
+    // unit box, each axis 0..1 - the vertex shader stretches it to the column
+    _buildBox() {
         const gl = this.gl;
-        const data = new Float32Array(this.columnCount * verticesPerColumn * 3);
-        let p = 0;
-        for (let i = 0; i < this.columnCount; i++) {
-            for (let c = 0; c < verticesPerColumn; c++) {
-                data[p++] = i;
-                data[p++] = cornerTable[c * 2];
-                data[p++] = cornerTable[c * 2 + 1];
+        const faces = [
+            { n: [0, 0, 1],  c: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },   // top
+            { n: [1, 0, 0],  c: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },   // +x
+            { n: [-1, 0, 0], c: [[0, 1, 0], [0, 0, 0], [0, 0, 1], [0, 1, 1]] },   // -x
+            { n: [0, 1, 0],  c: [[1, 1, 0], [0, 1, 0], [0, 1, 1], [1, 1, 1]] },   // +y
+            { n: [0, -1, 0], c: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },   // -y
+        ];
+        const data = [];
+        for (const { n, c } of faces) {
+            for (const i of [0, 1, 2, 0, 2, 3]) {
+                data.push(...c[i], ...n);
             }
         }
 
-        const vao = gl.createVertexArray();
-        gl.bindVertexArray(vao);
+        this.boxVao = gl.createVertexArray();
+        gl.bindVertexArray(this.boxVao);
 
-        const vbo = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        this.boxBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.boxBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
 
-        const stride = 3 * Float32Array.BYTES_PER_ELEMENT;
-        const { indexLoc, cornerLoc } = this.shader;
-        gl.enableVertexAttribArray(indexLoc);
-        gl.vertexAttribPointer(indexLoc, 1, gl.FLOAT, false, stride, 0);
-
-        gl.enableVertexAttribArray(cornerLoc);
-        gl.vertexAttribPointer(cornerLoc, 2, gl.FLOAT, false, stride, Float32Array.BYTES_PER_ELEMENT);
+        const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
+        gl.enableVertexAttribArray(this.shader.cornerLoc);
+        gl.vertexAttribPointer(this.shader.cornerLoc, 3, gl.FLOAT, false, stride, 0);
+        gl.enableVertexAttribArray(this.shader.normalLoc);
+        gl.vertexAttribPointer(this.shader.normalLoc, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
 
         gl.bindVertexArray(null);
-        return { vao, vbo };
     }
 
-    setGapFraction(gapFraction) { this.gapFraction = gapFraction; }
-
-    _bindTextures(terrainTexId, waterTexId) {
+    // the water box's top rectangle + 4 vertical edges, drawn as GL_LINES for the outline
+    _buildEdges() {
         const gl = this.gl;
+        const top = [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
+        const bottom = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]];
+        const data = [];
+        for (let i = 0; i < 4; i++) {
+            data.push(...top[i], ...top[(i + 1) % 4]);
+            data.push(...bottom[i], ...top[i]);
+        }
+
+        this.edgeVao = gl.createVertexArray();
+        gl.bindVertexArray(this.edgeVao);
+
+        this.edgeBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+
+        gl.enableVertexAttribArray(this.shader.cornerLoc);
+        gl.vertexAttribPointer(this.shader.cornerLoc, 3, gl.FLOAT, false, 0, 0);
+        // no normal for the lines - they're drawn unlit
+        gl.disableVertexAttribArray(this.shader.normalLoc);
+
+        gl.bindVertexArray(null);
+    }
+
+    setGapFraction(fraction) { this.gapFraction = fraction; }
+
+    // column-major view * projection, straight from Camera.getViewProjMatrix()
+    setCamera(viewProj) { this.viewProj = viewProj; }
+
+    renderTerrain(terrainTex, worldWidth, r, g, b) {
+        this._drawFill(LAYER_TERRAIN, terrainTex, terrainTex, worldWidth, r, g, b);
+    }
+
+    renderWater(terrainTex, waterTex, worldWidth, r, g, b) {
+        this._drawFill(LAYER_WATER, terrainTex, waterTex, worldWidth, r, g, b);
+    }
+
+    renderWaterOutline(terrainTex, waterTex, worldWidth, r, g, b) {
+        const gl = this.gl;
+        this._setUniforms(LAYER_WATER, terrainTex, waterTex, worldWidth, r, g, b, 0.0);
+        gl.bindVertexArray(this.edgeVao);
+        gl.drawArraysInstanced(gl.LINES, 0, EDGE_VERTEX_COUNT, this.columnCount * this.columnCount);
+        gl.bindVertexArray(null);
+    }
+
+    _drawFill(layer, terrainTex, waterTex, worldWidth, r, g, b) {
+        const gl = this.gl;
+        this._setUniforms(layer, terrainTex, waterTex, worldWidth, r, g, b, 1.0);
+
+        // push the filled faces back a hair so the outline lines sitting on their edges win the depth test
+        gl.enable(gl.POLYGON_OFFSET_FILL);
+        gl.polygonOffset(1, 1);
+        gl.bindVertexArray(this.boxVao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, BOX_VERTEX_COUNT, this.columnCount * this.columnCount);
+        gl.bindVertexArray(null);
+        gl.disable(gl.POLYGON_OFFSET_FILL);
+    }
+
+    _setUniforms(layer, terrainTex, waterTex, worldWidth, r, g, b, lit) {
+        const gl = this.gl;
+        const sh = this.shader;
+        gl.useProgram(sh.program);
+
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, waterTexId);
-        gl.uniform1i(this.shader.uWaterLoc, 0);
-
+        gl.bindTexture(gl.TEXTURE_2D, terrainTex);
+        gl.uniform1i(sh.uTerrainLoc, 0);
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, terrainTexId);
-        gl.uniform1i(this.shader.uTerrainLoc, 1);
-    }
+        gl.bindTexture(gl.TEXTURE_2D, waterTex);
+        gl.uniform1i(sh.uWaterLoc, 1);
 
-    // draws the terrain: floor(0) -> each column's fixed terrain height
-    renderTerrain(terrainTexId, maxHeight, r, g, b) {
-        const gl = this.gl;
-        gl.useProgram(this.shader.program);
-        this._bindTextures(terrainTexId, terrainTexId);
-        gl.uniform1f(this.shader.uColumnCountLoc, this.columnCount);
-        gl.uniform1f(this.shader.uMaxHeightLoc, maxHeight);
-        gl.uniform1f(this.shader.uGapFractionLoc, this.gapFraction);
-        gl.uniform3f(this.shader.uColorLoc, r, g, b);
-        gl.uniform1i(this.shader.uDrawTerrainLoc, 1);
-
-        gl.bindVertexArray(this.vao);
-        gl.drawArrays(gl.TRIANGLES, 0, this.columnCount * 6);
-        gl.bindVertexArray(null);
-    }
-
-    // draws the water: each column's terrain height -> terrain height + water depth
-    renderWater(terrainTexId, waterTexId, maxHeight, r, g, b) {
-        const gl = this.gl;
-        gl.useProgram(this.shader.program);
-        this._bindTextures(terrainTexId, waterTexId);
-        gl.uniform1f(this.shader.uColumnCountLoc, this.columnCount);
-        gl.uniform1f(this.shader.uMaxHeightLoc, maxHeight);
-        gl.uniform1f(this.shader.uGapFractionLoc, this.gapFraction);
-        gl.uniform3f(this.shader.uColorLoc, r, g, b);
-        gl.uniform1i(this.shader.uDrawTerrainLoc, 0);
-
-        gl.bindVertexArray(this.vao);
-        gl.drawArrays(gl.TRIANGLES, 0, this.columnCount * 6);
-        gl.bindVertexArray(null);
-    }
-
-    // same water bars again, as gl.LINES around each one's 4 edges -
-    // call this right after renderWater() so the outline draws on top of the fill
-    renderWaterOutline(terrainTexId, waterTexId, maxHeight, r, g, b) {
-        const gl = this.gl;
-        gl.useProgram(this.shader.program);
-        this._bindTextures(terrainTexId, waterTexId);
-        gl.uniform1f(this.shader.uColumnCountLoc, this.columnCount);
-        gl.uniform1f(this.shader.uMaxHeightLoc, maxHeight);
-        gl.uniform1f(this.shader.uGapFractionLoc, this.gapFraction);
-        gl.uniform3f(this.shader.uColorLoc, r, g, b);
-        gl.uniform1i(this.shader.uDrawTerrainLoc, 0);
-
-        gl.bindVertexArray(this.outlineVao);
-        gl.drawArrays(gl.LINES, 0, this.columnCount * 8);
-        gl.bindVertexArray(null);
+        gl.uniformMatrix4fv(sh.uViewProjLoc, false, this.viewProj);
+        gl.uniform1f(sh.uColumnCountLoc, this.columnCount);
+        gl.uniform1f(sh.uWorldWidthLoc, worldWidth);
+        gl.uniform1f(sh.uGapFractionLoc, this.gapFraction);
+        gl.uniform1i(sh.uLayerLoc, layer);
+        gl.uniform3f(sh.uColorLoc, r, g, b);
+        gl.uniform1f(sh.uLitLoc, lit);
     }
 
     dispose() {
         const gl = this.gl;
-        gl.deleteVertexArray(this.vao);
-        gl.deleteBuffer(this.vbo);
-        gl.deleteVertexArray(this.outlineVao);
-        gl.deleteBuffer(this.outlineVbo);
+        gl.deleteVertexArray(this.boxVao);
+        gl.deleteVertexArray(this.edgeVao);
+        gl.deleteBuffer(this.boxBuffer);
+        gl.deleteBuffer(this.edgeBuffer);
+        gl.deleteProgram(this.shader.program);
     }
 }

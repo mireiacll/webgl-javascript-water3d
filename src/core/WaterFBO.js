@@ -1,4 +1,5 @@
 // One column's water state per texel: R = height, G = velocity
+// The texture is columnCount x columnCount now - texel (col, row) is the column at that grid spot.
 export class WaterFBO {
     constructor(gl, columnCount) {
         this.gl = gl;
@@ -13,7 +14,7 @@ export class WaterFBO {
 
         this.texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, this.columnCount, 1, 0, gl.RG, gl.FLOAT, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, this.columnCount, this.columnCount, 0, gl.RG, gl.FLOAT, null);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -32,7 +33,7 @@ export class WaterFBO {
     bind() {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-        gl.viewport(0, 0, this.columnCount, 1);
+        gl.viewport(0, 0, this.columnCount, this.columnCount);
     }
 
     unbind() {

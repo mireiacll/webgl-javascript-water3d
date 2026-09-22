@@ -39,6 +39,7 @@ export class FluxUpdateRenderer {
     // heightTexId  = current WaterFBO texture (last frame's water depth/velocity)
     // fluxTexId    = current FluxFBO texture (last frame's flux)
     // terrainTexId = the fixed terrain height texture (never ping-pongs)
+    // columnCount is columns per side - the grid is columnCount x columnCount
     render(heightTexId, fluxTexId, terrainTexId, columnCount, pipeArea, pipeLength, dt, damping) {
         const gl = this.gl;
         gl.useProgram(this.shader.program);
@@ -55,7 +56,7 @@ export class FluxUpdateRenderer {
         gl.bindTexture(gl.TEXTURE_2D, terrainTexId);
         gl.uniform1i(this.shader.uTerrainLoc, 2);
 
-        gl.uniform1f(this.shader.uTexelXLoc, 1.0 / columnCount);
+        gl.uniform1f(this.shader.uTexelLoc, 1.0 / columnCount);
         gl.uniform1f(this.shader.uColumnCountLoc, columnCount);
         gl.uniform1f(this.shader.uPipeAreaLoc, pipeArea);
         gl.uniform1f(this.shader.uPipeLengthLoc, pipeLength);

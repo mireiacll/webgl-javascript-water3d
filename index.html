@@ -32,14 +32,14 @@
     <p class="section">Parameters (locked while running)</p>
 
     <div class="field">
-      <label for="columnCount">Column count</label>
-      <input type="range" id="columnCount" min="4" max="2000" step="1" />
+      <label for="columnCount">Columns per side (grid is N x N)</label>
+      <input type="range" id="columnCount" min="4" max="400" step="1" />
       <span id="columnCountValue" class="value"></span>
     </div>
     <p id="columnWidthInfo" class="info"></p>
 
     <div class="field">
-      <label for="worldWidth">World width (m)</label>
+      <label for="worldWidth">World width (m, square tank)</label>
       <input type="range" id="worldWidth" min="1" max="2000" step="1" />
       <span id="worldWidthValue" class="value"></span>
     </div>
@@ -64,36 +64,40 @@
     <p class="section">Water drop (shown live below as a preview, already at drop depth)</p>
 
     <div class="field">
-      <label for="dropPositionX">Drop position (m)</label>
+      <label for="dropPositionX">Drop position X (m)</label>
       <input type="range" id="dropPositionX" min="0" max="2000" step="0.5" />
       <span id="dropPositionXValue" class="value"></span>
     </div>
 
     <div class="field">
-      <label for="dropWidth">Drop width (m)</label>
+      <label for="dropPositionY">Drop position Y (m)</label>
+      <input type="range" id="dropPositionY" min="0" max="2000" step="0.5" />
+      <span id="dropPositionYValue" class="value"></span>
+    </div>
+
+    <div class="field">
+      <label for="dropWidth">Drop side (m, square block)</label>
       <input type="range" id="dropWidth" min="0.1" max="2000" step="0.1" />
       <span id="dropWidthValue" class="value"></span>
     </div>
 
     <div class="field">
-      <label for="dropAreaM2">Drop area (m^2)</label>
-      <input type="range" id="dropAreaM2" min="0" max="5000" step="0.1" />
-      <span id="dropAreaM2Value" class="value"></span>
+      <label for="dropVolumeM3">Drop volume (m^3)</label>
+      <input type="range" id="dropVolumeM3" min="0" max="100000" step="10" />
+      <span id="dropVolumeM3Value" class="value"></span>
     </div>
     <p id="dropDepthInfo" class="info"></p>
 
     <hr />
 
-    <div class="field">
-      <label for="maxHeightDisplay">Display max height (m)</label>
-      <input type="range" id="maxHeightDisplay" min="1" max="500" step="0.5" />
-      <span id="maxHeightDisplayValue" class="value"></span>
-    </div>
-
     <div class="field checkbox-field">
       <label for="showOutline">Show column outlines</label>
       <input type="checkbox" id="showOutline" />
     </div>
+
+    <p class="info">
+      Camera: left drag pan, right drag zoom, middle drag or ctrl+left drag orbit, wheel zoom to cursor
+    </p>
   </div>
 
   <script type="module" src="/src/main.js"></script>

@@ -1,39 +1,47 @@
 #version 300 es
 
-in float a_index;   // which column this vertex belongs to, 0..columnCount-1
-in vec2 a_corner;   // which corner of that column's quad: x = 0(left)/1(right), y = 0(bottom)/1(top)
+in vec3 a_corner;  // corner of a unit box, each axis 0..1
+in vec3 a_normal;  // face normal of that corner (unused / zero for the outline lines)
 
-uniform sampler2D u_water;   // WaterFBO texture: r = water DEPTH above terrain, g = velocity (unused here)
-uniform sampler2D u_terrain; // fixed terrain height per column, r32f
-uniform float u_columnCount;
-uniform float u_maxHeight;   // world height that maps to the very top of the screen
-uniform float u_gapFraction; // fraction of each column's width left empty as a gap, e.g. 0.15
-uniform int u_drawTerrain;   // 1 = draw the terrain layer (0 -> terrain top), 0 = draw the water layer (terrain top -> terrain+water top)
+uniform sampler2D u_water;    // WaterFBO texture: r = water DEPTH above terrain, g = velocity (unused here)
+uniform sampler2D u_terrain;  // fixed terrain height per column, r32f
+uniform mat4 u_viewProj;
+uniform float u_columnCount;  // columns per side
+uniform float u_worldWidth;   // side of the whole tank in meters
+uniform float u_gapFraction;  // fraction of each column's width left empty as a gap, e.g. 0.1
+uniform int u_layer;          // 0 = terrain (z 0 -> terrain top), 1 = water (terrain top -> water top)
+
+out vec3 v_normal;
+
+// water shallower than this isn't drawn at all - a zero-height box would sit exactly on the terrain top and z-fight with it
+const float MIN_DRAW_DEPTH = 0.001;
 
 void main() {
-    float colWidth = 1.0 / u_columnCount;
-    float gap = colWidth * u_gapFraction * 0.5;
+    // one instance per column, laid out row by row
+    int n = int(u_columnCount + 0.5);
+    ivec2 cell = ivec2(gl_InstanceID % n, gl_InstanceID / n);
 
-    // left/right edges of THIS column's bar, shrunk in from the full cell width
-    // so neighboring bars don't touch
-    float xLeft = a_index * colWidth + gap;
-    float xRight = (a_index + 1.0) * colWidth - gap;
-    float x = mix(xLeft, xRight, a_corner.x);
+    float terrainH = texelFetch(u_terrain, cell, 0).r;
+    float waterDepth = texelFetch(u_water, cell, 0).r;
 
-    float u = (a_index + 0.5) / u_columnCount;
-    float terrainH = texture(u_terrain, vec2(u, 0.5)).r;
-    float waterDepth = texture(u_water, vec2(u, 0.5)).r;
+    if (u_layer == 1 && waterDepth < MIN_DRAW_DEPTH) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside the clip volume, whole box gets dropped
+        v_normal = vec3(0.0);
+        return;
+    }
 
-    float terrainFrac = clamp(terrainH / u_maxHeight, 0.0, 1.0);
-    float waterTopFrac = clamp((terrainH + waterDepth) / u_maxHeight, 0.0, 1.0);
+    float d = u_worldWidth / u_columnCount;
+    float gap = d * u_gapFraction * 0.5;
 
-    // terrain layer: floor(0) -> top of terrain. water layer: top of terrain -> top of water
-    float yBottom = (u_drawTerrain == 1) ? 0.0 : terrainFrac;
-    float yTop = (u_drawTerrain == 1) ? terrainFrac : waterTopFrac;
-    float y = mix(yBottom, yTop, a_corner.y);
+    // x/y footprint of THIS column's box, shrunk in from the full cell so neighbors don't touch
+    vec2 xyMin = vec2(cell) * d + gap;
+    vec2 xyMax = vec2(cell + 1) * d - gap;
 
-    float ndcX = x * 2.0 - 1.0;
-    float ndcY = y * 2.0 - 1.0;
+    float zBottom = (u_layer == 0) ? 0.0 : terrainH;
+    float zTop = (u_layer == 0) ? terrainH : terrainH + waterDepth;
 
-    gl_Position = vec4(ndcX, ndcY, 0.0, 1.0);
+    vec3 pos = vec3(mix(xyMin, xyMax, a_corner.xy), mix(zBottom, zTop, a_corner.z));
+
+    gl_Position = u_viewProj * vec4(pos, 1.0);
+    v_normal = a_normal;
 }

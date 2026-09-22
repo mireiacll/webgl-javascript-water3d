@@ -10,13 +10,21 @@ export class HeightUpdateShader {
         this.texCoordLoc = gl.getAttribLocation(this.program, 'a_texCoord');
         this.uHeightLoc = gl.getUniformLocation(this.program, 'u_height');
         this.uFluxLoc = gl.getUniformLocation(this.program, 'u_flux');
-        this.uTexelXLoc = gl.getUniformLocation(this.program, 'u_texelX');
+        this.uTexelLoc = gl.getUniformLocation(this.program, 'u_texel'); // was u_texelX
         this.uColumnCountLoc = gl.getUniformLocation(this.program, 'u_columnCount');
         this.uColumnAreaLoc = gl.getUniformLocation(this.program, 'u_columnArea');
         this.uDtLoc = gl.getUniformLocation(this.program, 'u_dt');
         this.uMinHeightLoc = gl.getUniformLocation(this.program, 'u_minHeight');
-        this.uPourStartColLoc = gl.getUniformLocation(this.program, 'u_pourStartCol');
-        this.uPourEndColLoc = gl.getUniformLocation(this.program, 'u_pourEndCol');
+        this.uPourStartLoc = gl.getUniformLocation(this.program, 'u_pourStart'); // vec2 (col, row) now
+        this.uPourEndLoc = gl.getUniformLocation(this.program, 'u_pourEnd');     // vec2 (col, row) now
         this.uPourRateLoc = gl.getUniformLocation(this.program, 'u_pourRate');
+
+        // gl.uniform*(null/undefined, ...) is silently ignored, so a stale name here fails without any error.
+        // shout instead
+        for (const [key, loc] of Object.entries(this)) {
+            if (key.endsWith('Loc') && (loc === null || loc === undefined || loc === -1)) {
+                console.error(`HeightUpdateShader: "${key}" not found in the shader - old file or renamed uniform?`);
+            }
+        }
     }
 }
