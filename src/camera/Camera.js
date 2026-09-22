@@ -87,11 +87,11 @@ export class Camera {
         return new Float32Array([
             f / aspect, 0, 0, 0,
             0, f, 0, 0,
-            0, 0, (this.near + this.far) * rangeInv, -1,
-            0, 0, 2 * this.near * this.far * rangeInv, 0,
+            0, 0, -(this.near + this.far) * rangeInv, -1,   // negated
+            0, 0, -2 * this.near * this.far * rangeInv, 0,   // negated
         ]);
     }
-
+    
     getViewProjMatrix(aspect) {
         return multiplyMat4(this.getProjectionMatrix(aspect), this.getViewMatrix());
     }

@@ -8,6 +8,7 @@ import { buildTerrainHeightTexture } from './core/TerrainHeightTextureBuilder.js
 import { buildWaterHeightTexture } from './core/WaterHeightTextureBuilder.js';
 import { Camera } from './camera/Camera.js';
 import { CameraController } from './camera/CameraController.js';
+import { updateDynamicClipping } from './camera/dynamicClipping.js';
 
 const DEFAULT_COLUMN_COUNT = 100;           // columns per SIDE - the tank is columnCount x columnCount
 const DEFAULT_WORLD_WIDTH = 200.0;          // side of the square tank in meters - column width is derived as worldWidth / columnCount
@@ -37,7 +38,8 @@ if (!gl.getExtension('EXT_color_buffer_float')) {
 // the sim passes render into FBOs with no depth buffer, so the depth test is a no-op for them -
 // it only matters for the final column draw
 gl.enable(gl.DEPTH_TEST);
-gl.depthFunc(gl.LEQUAL);
+gl.depthFunc(gl.GEQUAL);   // near now stores the LARGER value, so "closer" wins with >=
+gl.clearDepth(0.0);        // far/empty is now 0, not 1
 
 function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -81,8 +83,7 @@ camera.lookAt(
 );
 const cameraController = new CameraController(canvas, camera);
 
-// builds the column-count-sized resources - called on startup, on every column
-// count change, and on every "Regenerate Terrain" click
+// builds the column-count-sized resources 
 function buildSimResources(columnCount, worldWidth, terrainHeightScale, seed) {
     return {
         waterPPB: new WaterPingPongBuffer(gl, columnCount),
@@ -94,8 +95,7 @@ function buildSimResources(columnCount, worldWidth, terrainHeightScale, seed) {
 
 // (re)seeds the water sim for a fresh run: water depth is 0 everywhere except
 // the dropped block (columns [dropStartCol, dropEndCol) x rows [dropStartRow, dropEndRow)),
-// which starts uniformly at dropDepth - flux starts at zero since there's no
-// meaningful "last frame" yet
+// which starts uniformly at dropDepth 
 function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth) {
     const seedTexture = buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     waterPPB.current().bind();
@@ -182,8 +182,6 @@ regenerateTerrainBtn.addEventListener('click', () => {
 });
 
 // the drop is a square block of columns centered on (dropPositionX, dropPositionY).
-// its edges snap outward to whole columns, so the real footprint can be a bit bigger than
-// dropWidth x dropWidth (and gets cut off where it hangs over the tank edge)
 function computeDropRegion() {
     const columnWidth = params.worldWidth / params.columnCount;
     const half = params.dropWidth / 2;
@@ -291,6 +289,9 @@ function frame() {
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(0.05, 0.05, 0.08, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    const maxSceneHeight = params.terrainHeightScale + 20;
+    updateDynamicClipping(camera, params.worldWidth, maxSceneHeight);
 
     sim.columnRenderer.setCamera(camera.getViewProjMatrix(canvas.width / canvas.height));
     sim.columnRenderer.setGapFraction(params.showOutline ? 0.1 : 0.0);

@@ -108,7 +108,7 @@ export class ColumnRenderer {
 
         // push the filled faces back a hair so the outline lines sitting on their edges win the depth test
         gl.enable(gl.POLYGON_OFFSET_FILL);
-        gl.polygonOffset(1, 1);
+        gl.polygonOffset(-1, -1);
         gl.bindVertexArray(this.boxVao);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, BOX_VERTEX_COUNT, this.columnCount * this.columnCount);
         gl.bindVertexArray(null);
