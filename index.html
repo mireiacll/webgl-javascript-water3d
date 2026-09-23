@@ -39,26 +39,48 @@
     <p id="columnWidthInfo" class="info"></p>
 
     <div class="field">
-      <label for="worldWidth">World width (m, square tank)</label>
-      <input type="range" id="worldWidth" min="1" max="2000" step="1" />
-      <span id="worldWidthValue" class="value"></span>
-    </div>
-
-    <div class="field">
       <label for="damping">Damping</label>
       <input type="range" id="damping" min="0.5" max="1.0" step="0.001" />
       <span id="dampingValue" class="value"></span>
     </div>
 
     <hr />
-    <p class="section">Terrain</p>
+    <p class="section">Generate area</p>
+    <p class="info">
+      These don't take effect live - drag them all into place first, then hit
+      "Random" for procedural terrain or "Pull from real life" to fetch real
+      elevation data. Either button (re)builds the tank at exactly the width
+      set here, so the tank is always the same physical size as the terrain
+      it's showing.
+    </p>
 
     <div class="field">
-      <label for="terrainHeightScale">Terrain height scale (m)</label>
+      <label for="worldWidth">World width (m, square tank)</label>
+      <input type="range" id="worldWidth" min="1" max="20000" step="1" />
+      <span id="worldWidthValue" class="value"></span>
+    </div>
+
+    <div class="field">
+      <label for="terrainHeightScale">Terrain height scale (m, procedural only)</label>
       <input type="range" id="terrainHeightScale" min="0" max="100" step="0.1" />
       <span id="terrainHeightScaleValue" class="value"></span>
     </div>
-    <button id="regenerateTerrainBtn">Regenerate Terrain</button>
+
+    <div class="field">
+      <label for="centerLat">Center latitude (real terrain only)</label>
+      <input type="number" id="centerLat" step="0.0001" min="-90" max="90" />
+    </div>
+
+    <div class="field">
+      <label for="centerLon">Center longitude (real terrain only)</label>
+      <input type="number" id="centerLon" step="0.0001" min="-180" max="180" />
+    </div>
+
+    <div class="row buttons">
+      <button id="regenerateTerrainBtn">Random</button>
+      <button id="loadRealTerrainBtn">Pull from real life</button>
+    </div>
+    <p id="realTerrainStatus" class="info"></p>
 
     <hr />
     <p class="section">Water drop (shown live below as a preview, already at drop depth)</p>
@@ -95,6 +117,12 @@
       <input type="checkbox" id="showOutline" />
     </div>
 
+    <div class="field checkbox-field">
+      <label for="terrainAsMesh">Terrain as mesh (uncheck for columns)</label>
+      <input type="checkbox" id="terrainAsMesh" checked />
+    </div>
+
+    <hr />
     <p class="info">
       Camera: left drag pan, right drag zoom, middle drag or ctrl+left drag orbit, wheel zoom to cursor
     </p>

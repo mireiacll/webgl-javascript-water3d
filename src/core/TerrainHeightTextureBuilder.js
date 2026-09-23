@@ -1,3 +1,15 @@
+// Builds a single-channel R32F texture holding one FIXED terrain height per
+// column - the floor the water sim rests on and flows over. Same call shape
+// as WaterHeightTextureBuilder.build(): CPU-side buffer, uploaded once,
+// texture handle returned directly (no FBO - this is only ever sampled,
+// never rendered into).
+//
+// The profile is a handful of sine waves at decreasing amplitude / increasing
+// frequency (a cheap fractal/"red" noise) with a random phase per octave,
+// so a given seed always regenerates the same terrain and a new seed
+// gives a different one. In 2D every octave also gets a random travel
+// direction, otherwise all the ridges would line up along one axis.
+
 const OCTAVES = 5;
 const PERSISTENCE = 0.5;   // each octave has half the amplitude of the previous one
 const LACUNARITY = 2.2;    // each octave has ~2.2x the frequency of the previous one
@@ -54,6 +66,10 @@ export function buildTerrainHeightTexture(gl, columnCount, worldWidth, heightSca
         }
     }
 
+    return uploadHeightTexture(gl, columnCount, buffer);
+}
+
+function uploadHeightTexture(gl, columnCount, buffer) {
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, columnCount, columnCount, 0, gl.RED, gl.FLOAT, buffer);
@@ -62,6 +78,22 @@ export function buildTerrainHeightTexture(gl, columnCount, worldWidth, heightSca
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.bindTexture(gl.TEXTURE_2D, null);
-
     return texture;
+}
+
+// Same per-column-center sampling convention as buildTerrainHeightTexture above
+// ((i+0.5)/columnCount*worldWidth), but driven by any height(x, y) function - real
+// elevation data via heightfieldSampler() from MireiaTerrainMesh.js, or anything else.
+// This is what lets the sim's terrain texture and TerrainMeshRenderer's visual mesh
+// both read from the exact same underlying height source, procedural or real.
+export function buildTerrainHeightTextureFromSampler(gl, columnCount, worldWidth, heightSampler) {
+    const buffer = new Float32Array(columnCount * columnCount);
+    for (let row = 0; row < columnCount; row++) {
+        const y = (row + 0.5) / columnCount * worldWidth;
+        for (let col = 0; col < columnCount; col++) {
+            const x = (col + 0.5) / columnCount * worldWidth;
+            buffer[row * columnCount + col] = heightSampler(x, y);
+        }
+    }
+    return uploadHeightTexture(gl, columnCount, buffer);
 }
