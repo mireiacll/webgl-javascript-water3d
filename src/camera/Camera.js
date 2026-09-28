@@ -1,28 +1,8 @@
+import { MireiaMat4 } from '../math/MireiaMat4.js';
+import { MireiaVec3 } from '../math/MireiaVec3.js';
+
 // Z-up world: the tank lies in XY. Yaw zero points along +Y; negative pitch looks down.
 // Matrices use WebGL's column-major layout.
-export function multiplyMat4(a, b) {
-    const out = new Float32Array(16);
-    for (let c = 0; c < 4; c++) {
-        for (let r = 0; r < 4; r++) {
-            let sum = 0;
-            for (let k = 0; k < 4; k++) sum += a[k * 4 + r] * b[c * 4 + k];
-            out[c * 4 + r] = sum;
-        }
-    }
-    return out;
-}
-
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const cross = (a, b) => [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-];
-const normalize = (v) => {
-    const len = Math.hypot(v[0], v[1], v[2]);
-    return [v[0] / len, v[1] / len, v[2] / len];
-};
-
 export class Camera {
     constructor() {
         this.position = [0, -150, 120];
@@ -47,31 +27,33 @@ export class Camera {
     }
 
     getUp() {
-        return cross(this.getRight(), this.getForward());
+        return new MireiaVec3(...this.getRight())
+            .cross(new MireiaVec3(...this.getForward()))
+            .toArray();
     }
 
     lookAt(target, distance, yaw, pitch) {
         this.yaw = yaw;
         this.pitch = pitch;
-        const f = this.getForward();
-        this.position = [
-            target[0] - f[0] * distance,
-            target[1] - f[1] * distance,
-            target[2] - f[2] * distance,
-        ];
+        const f = new MireiaVec3(...this.getForward());
+        const targetVec = new MireiaVec3(...target);
+        this.position = targetVec.subtract(f.scale(distance)).toArray();
     }
 
     getViewMatrix() {
-        const f = this.getForward();
-        const r = this.getRight();
-        const u = this.getUp();
-        const p = this.position;
+        const f = new MireiaVec3(...this.getForward());
+        const r = new MireiaVec3(...this.getRight());
+        const u = new MireiaVec3(...this.getUp());
+        const p = new MireiaVec3(...this.position);
+        const [fx, fy, fz] = f.toArray();
+        const [rx, ry, rz] = r.toArray();
+        const [ux, uy, uz] = u.toArray();
 
         return new Float32Array([
-            r[0], u[0], -f[0], 0,
-            r[1], u[1], -f[1], 0,
-            r[2], u[2], -f[2], 0,
-            -dot(r, p), -dot(u, p), dot(f, p), 1,
+            rx, ux, -fx, 0,
+            ry, uy, -fy, 0,
+            rz, uz, -fz, 0,
+            -r.dot(p), -u.dot(p), f.dot(p), 1,
         ]);
     }
 
@@ -88,18 +70,18 @@ export class Camera {
     }
     
     getViewProjMatrix(aspect) {
-        return multiplyMat4(this.getProjectionMatrix(aspect), this.getViewMatrix());
+        return MireiaMat4.multiplyArrays(this.getProjectionMatrix(aspect), this.getViewMatrix());
     }
 
     rayDirection(ndcX, ndcY, aspect) {
         const tanHalfFov = Math.tan(this.fov / 2);
-        const f = this.getForward();
-        const r = this.getRight();
-        const u = this.getUp();
-        return normalize([
-            f[0] + r[0] * ndcX * tanHalfFov * aspect + u[0] * ndcY * tanHalfFov,
-            f[1] + r[1] * ndcX * tanHalfFov * aspect + u[1] * ndcY * tanHalfFov,
-            f[2] + r[2] * ndcX * tanHalfFov * aspect + u[2] * ndcY * tanHalfFov,
-        ]);
+        const forward = new MireiaVec3(...this.getForward());
+        const right = new MireiaVec3(...this.getRight());
+        const up = new MireiaVec3(...this.getUp());
+        return forward
+            .add(right.scale(ndcX * tanHalfFov * aspect))
+            .add(up.scale(ndcY * tanHalfFov))
+            .normalize()
+            .toArray();
     }
 }

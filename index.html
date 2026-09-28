@@ -46,13 +46,6 @@
 
     <hr />
     <p class="section">Generate area</p>
-    <p class="info">
-      These don't take effect live - drag them all into place first, then hit
-      "Random" for procedural terrain or "Pull from real life" to fetch real
-      elevation data. Either button (re)builds the tank at exactly the width
-      set here, so the tank is always the same physical size as the terrain
-      it's showing.
-    </p>
 
     <div class="field">
       <label for="worldWidth">World width (m, square tank)</label>
@@ -82,15 +75,15 @@
     </div>
 
     <div class="field checkbox-field">
-      <label for="fetchImagery">Also pull satellite imagery texture</label>
-      <input type="checkbox" id="fetchImagery" />
+      <label for="showImagery">Show satellite imagery texture</label>
+      <input type="checkbox" id="showImagery" checked />
     </div>
-    <p class="info">Imagery: Esri World Imagery (attribution required when shown)</p>
+    <p class="info">Imagery: Esri World Imagery</p>
 
     <p id="realTerrainStatus" class="info"></p>
 
     <hr />
-    <p class="section">Water drop (shown live below as a preview, already at drop depth)</p>
+    <p class="section">Water drop </p>
 
     <div class="field">
       <label for="dropPositionX">Drop position X (m)</label>
@@ -130,9 +123,6 @@
     </div>
 
     <hr />
-    <p class="info">
-      Camera: left drag pan, right drag zoom, middle drag or ctrl+left drag orbit, wheel zoom to cursor
-    </p>
   </div>
 
   <script type="module" src="/src/main.js"></script>

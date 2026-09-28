@@ -89,8 +89,11 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     el('terrainAsMesh').checked = params.terrainAsMesh;
     el('terrainAsMesh').addEventListener('change', (e) => { params.terrainAsMesh = e.target.checked; });
 
-    el('fetchImagery').checked = params.fetchImagery;
-    el('fetchImagery').addEventListener('change', (e) => { params.fetchImagery = e.target.checked; });
+    el('showImagery').checked = params.showImagery;
+    el('showImagery').addEventListener('change', (e) => {
+        params.showImagery = e.target.checked;
+        actions.applyImagery();
+    });
 
     el('centerLat').value = params.centerLat;
     el('centerLon').value = params.centerLon;

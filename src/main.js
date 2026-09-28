@@ -79,7 +79,7 @@ const params = {
     terrainSource: 'procedural',
     centerLat: 45.8326,
     centerLon: 6.8652,
-    fetchImagery: false,
+    showImagery: true,
 };
 
 const realTerrain = {
@@ -150,10 +150,10 @@ function rebuildTerrainAndSim() {
     applyImageryTexture();
 }
 
-// One imagery texture is shared by both terrain renderers.
+// One imagery texture is shared by both terrain renderers; showImagery toggles it.
 let imageryTexture = null;
 function applyImageryTexture() {
-    if (imageryTexture) {
+    if (imageryTexture && params.showImagery) {
         terrainMeshRenderer.setImageryTexture(imageryTexture);
         sim.columnRenderer.setImageryTexture(imageryTexture);
     } else {
@@ -189,7 +189,7 @@ const ui = initUI({
     getState: () => state,
     getActiveWorldWidth: () => activeWorldWidth,
     hasImagery: () => !!imageryTexture,
-    actions: { start: startSim, stop: stopSim, remove: deleteSim, regenerateTerrain, loadRealTerrain },
+    actions: { applyImagery: applyImageryTexture, start: startSim, stop: stopSim, remove: deleteSim, regenerateTerrain, loadRealTerrain },
 });
 
 // Load elevation and optional imagery, then apply them as one terrain update.
@@ -204,7 +204,7 @@ async function loadRealTerrain() {
         const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, params.worldWidth);
         const [result, imagery] = await Promise.all([
             MireiaElevationTiles.build(bbox),
-            params.fetchImagery ? MireiaTileMosaic.build(bbox, { urlTemplate: SATELLITE_IMAGERY_URL_TEMPLATE }) : Promise.resolve(null),
+            MireiaTileMosaic.build(bbox, { urlTemplate: SATELLITE_IMAGERY_URL_TEMPLATE }),
         ]);
 
         const wasFilled = fillNoDataInPlace(result.heightfield, result.gridWidth, result.gridHeight);
@@ -227,7 +227,7 @@ async function loadRealTerrain() {
         realTerrain.hadOcean = hadOcean;
 
         if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
-        if (imagery) { imageryTexture = createImageTexture(gl, imagery.canvas); }
+        imageryTexture = createImageTexture(gl, imagery.canvas);
 
         params.terrainSource = 'real';
         activeWorldWidth = params.worldWidth;
