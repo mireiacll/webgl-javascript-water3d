@@ -16,14 +16,18 @@ export class TerrainMeshRenderer {
         this.program = buildProgram(gl, vertexSource, fragmentSource, 'TerrainMesh');
         this.positionLoc = gl.getAttribLocation(this.program, 'a_position');
         this.normalLoc = gl.getAttribLocation(this.program, 'a_normal');
+        this.texCoordLoc = gl.getAttribLocation(this.program, 'a_texCoord');
         this.uViewProjLoc = gl.getUniformLocation(this.program, 'u_viewProj');
         this.uColorLoc = gl.getUniformLocation(this.program, 'u_color');
         this.uLitLoc = gl.getUniformLocation(this.program, 'u_lit');
+        this.uTextureLoc = gl.getUniformLocation(this.program, 'u_texture');
+        this.uUseTextureLoc = gl.getUniformLocation(this.program, 'u_useTexture');
 
         this.vao = null;
         this.vertexBuffer = null;
         this.indexBuffer = null;
         this.indexCount = 0;
+        this.imageryTexture = null; // optional satellite imagery draped over the mesh - see setImageryTexture()
     }
 
     // (re)builds the mesh from the same procedural height function
@@ -46,13 +50,16 @@ export class TerrainMeshRenderer {
         const vertices = mesh.getVertices();
         const indices = mesh.getScene().getRoot().getIndices(); // also assigns each vertex's buffer index
 
-        // position(3) + normal(3) per vertex - no color/texcoord attribute, since the
-        // whole terrain is drawn as one flat u_color like ColumnRenderer already does
-        const data = new Float32Array(vertices.length * 6);
+        // position(3) + normal(3) + texCoord(2) per vertex - texCoord is only used when
+        // an imagery texture is set (see render()); with none set the shader falls back
+        // to flat u_color exactly as before, so this costs nothing when unused.
+        const data = new Float32Array(vertices.length * 8);
         for (let i = 0; i < vertices.length; i++) {
             const p = vertices[i].getPosition();
             const n = vertices[i].getNormal();
-            data.set([p.getX(), p.getY(), p.getZ(), n.getX(), n.getY(), n.getZ()], i * 6);
+            const uv = vertices[i].getTexCoord(); // NOTE: assumes MireiaVertex exposes this - if the
+                                                   // real getter is named differently, this throws here
+            data.set([p.getX(), p.getY(), p.getZ(), n.getX(), n.getY(), n.getZ(), uv.getX(), uv.getY()], i * 8);
         }
 
         this.vao = gl.createVertexArray();
@@ -62,11 +69,13 @@ export class TerrainMeshRenderer {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
 
-        const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
+        const stride = 8 * Float32Array.BYTES_PER_ELEMENT;
         gl.enableVertexAttribArray(this.positionLoc);
         gl.vertexAttribPointer(this.positionLoc, 3, gl.FLOAT, false, stride, 0);
         gl.enableVertexAttribArray(this.normalLoc);
         gl.vertexAttribPointer(this.normalLoc, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
+        gl.enableVertexAttribArray(this.texCoordLoc);
+        gl.vertexAttribPointer(this.texCoordLoc, 2, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
 
         this.indexBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
@@ -76,6 +85,12 @@ export class TerrainMeshRenderer {
         gl.bindVertexArray(null);
     }
 
+    // Satellite imagery draped over the mesh using each vertex's baked-in UV. Doesn't
+    // own the texture (main.js does, since the same texture is also handed to
+    // ColumnRenderer), so this never deletes it, just stops using it.
+    setImageryTexture(texture) { this.imageryTexture = texture; }
+    clearImageryTexture() { this.imageryTexture = null; }
+
     render(viewProjMatrix, r, g, b) {
         const gl = this.gl;
         if (!this.vao) return; // build() hasn't run yet
@@ -84,6 +99,10 @@ export class TerrainMeshRenderer {
         gl.uniformMatrix4fv(this.uViewProjLoc, false, viewProjMatrix);
         gl.uniform3f(this.uColorLoc, r, g, b);
         gl.uniform1f(this.uLitLoc, 1.0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.imageryTexture);
+        gl.uniform1i(this.uTextureLoc, 0);
+        gl.uniform1f(this.uUseTextureLoc, this.imageryTexture ? 1.0 : 0.0);
 
         gl.bindVertexArray(this.vao);
         gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);

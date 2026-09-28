@@ -17,6 +17,7 @@ export class ColumnRenderer {
         this.viewProj = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
         this.shader = new ColumnShader(gl);
+        this.imageryTexture = null; // optional satellite imagery draped over TERRAIN faces only - see setImageryTexture()
 
         this._buildBox();
         this._buildEdges();
@@ -83,6 +84,13 @@ export class ColumnRenderer {
 
     setGapFraction(fraction) { this.gapFraction = fraction; }
 
+    // Satellite imagery draped over the TERRAIN layer only (see _setUniforms), using
+    // the UV columnVertex.glsl derives from world xy - doesn't own the texture (main.js
+    // does, since the same texture is also handed to TerrainMeshRenderer), so this
+    // never deletes it, just stops using it.
+    setImageryTexture(texture) { this.imageryTexture = texture; }
+    clearImageryTexture() { this.imageryTexture = null; }
+
     // column-major view * projection, straight from Camera.getViewProjMatrix()
     setCamera(viewProj) { this.viewProj = viewProj; }
 
@@ -126,6 +134,12 @@ export class ColumnRenderer {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, waterTex);
         gl.uniform1i(sh.uWaterLoc, 1);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this.imageryTexture);
+        gl.uniform1i(sh.uTextureLoc, 2);
+        // imagery is terrain-only - water always needs its own distinct color so the
+        // drop preview/outline stays visible against the ground, satellite photo or not
+        gl.uniform1f(sh.uUseTextureLoc, (layer === LAYER_TERRAIN && this.imageryTexture) ? 1.0 : 0.0);
 
         gl.uniformMatrix4fv(sh.uViewProjLoc, false, this.viewProj);
         gl.uniform1f(sh.uColumnCountLoc, this.columnCount);

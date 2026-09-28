@@ -17,6 +17,8 @@ export class ColumnShader {
         this.uLayerLoc = gl.getUniformLocation(this.program, 'u_layer');
         this.uColorLoc = gl.getUniformLocation(this.program, 'u_color');
         this.uLitLoc = gl.getUniformLocation(this.program, 'u_lit');
+        this.uTextureLoc = gl.getUniformLocation(this.program, 'u_texture');
+        this.uUseTextureLoc = gl.getUniformLocation(this.program, 'u_useTexture');
 
         // gl.uniform*(null/undefined, ...) is silently ignored, so a stale name here fails without any error.
         // shout instead

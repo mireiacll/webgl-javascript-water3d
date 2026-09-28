@@ -12,6 +12,7 @@ import { TerrainMeshRenderer } from './core/TerrainMeshRenderer.js';
 import { buildTerrainHeightTextureFromSampler } from './core/TerrainHeightTextureBuilder.js';
 import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrainMesh.js';
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
+import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
 
 const DEFAULT_COLUMN_COUNT = 100;           // columns per SIDE - the tank is columnCount x columnCount
 const DEFAULT_WORLD_WIDTH = 200.0;          // side of the square tank in meters - column width is derived as worldWidth / columnCount
@@ -22,15 +23,21 @@ const GRAVITY = 9.8;
 const DEFAULT_TERRAIN_HEIGHT_SCALE = 10.0;  // height of the tallest terrain peak
 const DEFAULT_TERRAIN_SEED = 1;
 const DEFAULT_DROP_WIDTH = 20.0;            // side of the dropped square water block, in meters
-const DEFAULT_DROP_VOLUME_M3 = 6000;
-// Position and drop-width scale linearly with activeWorldWidth (see
-// syncDropRangesToActiveWidth) because they're lengths. Volume has to scale as the
-// CUBE of width instead: depth = volume / footprint, and footprint alone already
-// scales as width^2, so leaving volume's max fixed means a small tank can get a
-// thousand-meters-deep splash while a big tank can't get a visible one at all. This
-// constant is picked so the max stays exactly 100000 m^3 at the current default
-// worldWidth (200m) - nothing changes unless the tank size does.
-const DROP_VOLUME_MAX_DEPTH_FRACTION = 100000 / (DEFAULT_WORLD_WIDTH ** 3);
+// 2 m of water over the default 20 x 20 m block. (This used to be 6000 m^3 = 15 m deep
+// over that footprint, which is a wall of water, not a drop.)
+const DEFAULT_DROP_VOLUME_M3 = 800;
+// The drop volume slider's max depends ONLY on the tank width, not on the drop's own size:
+// max volume = MAX_DROP_DEPTH_FRACTION * activeWorldWidth^3, i.e. the volume that gives a
+// depth of 5% of the width if the drop covered the whole tank (10 m at 200 m, 100 m at 2 km,
+// 1000 m at 20 km). A smaller drop just gets deeper for the same volume, like real water would.
+const MAX_DROP_DEPTH_FRACTION = 0.05;
+// Esri World Imagery - public satellite/aerial tiles, no API key needed, same
+// slippy z/x/y scheme as everything else here (the {y}/{x} order in the URL itself
+// doesn't matter - MireiaTileMosaic just replaces each placeholder wherever it
+// appears). Esri's terms require attribution when this is shown (see the label
+// wired to attributionEl below) and only cover live display, not bulk caching -
+// fine for fetch-on-demand like this, not for a scraper.
+const SATELLITE_IMAGERY_URL_TEMPLATE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
 const TERRAIN_COLOR = [0.45, 0.35, 0.25];
@@ -86,6 +93,7 @@ const params = {
     terrainSource: 'procedural',             // 'procedural' or 'real' - see getCurrentHeightSampler()
     centerLat: 45.8326,                      // default: Mont Blanc area - dramatic relief, easy to see it worked
     centerLon: 6.8652,
+    fetchImagery: false,                     // if checked, "Pull from real life" also drapes satellite imagery over the terrain
     // real-terrain fetches use worldWidth itself as the real-world patch size (see
     // loadRealTerrainBtn below) - the tank's physical size and the area fetched from
     // the map are the same number, so there's nothing left to keep in sync separately.
@@ -193,6 +201,22 @@ function clampSeaLevelInPlace(heightfield) {
     return clamped;
 }
 
+// Uploads a fetched imagery mosaic canvas (from MireiaTileMosaic) as a regular 2D
+// texture. Mipmapped + linear-filtered since the mesh/columns can be viewed from any
+// distance, and clamped rather than repeated since it's a one-off satellite photo,
+// not a tiling pattern.
+function createImageTexture(gl, canvas) {
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    return texture;
+}
+
 // width of the last GENERATED area - decoupled from params.worldWidth (the live slider)
 // until "Random" or "Pull from real life" applies it; see frameCamera below
 let activeWorldWidth = params.worldWidth;
@@ -201,6 +225,8 @@ let terrainSeed = DEFAULT_TERRAIN_SEED;
 // ---- camera ----
 const camera = new Camera();
 const cameraController = new CameraController(canvas, camera);
+cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
+cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3));
 
 // Height of the terrain's own vertical range for whichever source is active - shared by
 // camera framing, the pan/orbit/zoom pick plane, and far-clip sizing so none of them can
@@ -252,7 +278,25 @@ function rebuildTerrainAndSim() {
     gl.deleteTexture(sim.terrainTexture);
     sim = buildSimResources(params.columnCount, activeWorldWidth);
     terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth);
+    cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth)); // so altitude clamping (see CameraController._clampAltitude) tracks whatever terrain is now active
+    cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3)); // ground picks (pan/orbit/zoom targeting) need to reach across the actual tank, not just the small default
     resourceColumnCount = params.columnCount;
+    applyImageryTexture(); // buildSimResources() just made a brand new ColumnRenderer - it doesn't know about imageryTexture yet
+}
+
+// current satellite imagery, if any was fetched via the "Pull from real life" checkbox -
+// owned here (not by either renderer) because it's shared between TerrainMeshRenderer
+// and ColumnRenderer, and because ColumnRenderer gets recreated from scratch on every
+// rebuildTerrainAndSim() call, so its texture reference would otherwise be lost.
+let imageryTexture = null;
+function applyImageryTexture() {
+    if (imageryTexture) {
+        terrainMeshRenderer.setImageryTexture(imageryTexture);
+        sim.columnRenderer.setImageryTexture(imageryTexture);
+    } else {
+        terrainMeshRenderer.clearImageryTexture();
+        sim.columnRenderer.clearImageryTexture();
+    }
 }
 
 // (re)seeds the water sim for a fresh run: water depth is 0 everywhere except
@@ -313,7 +357,45 @@ bindSlider('terrainHeightScale', 'terrainHeightScale', (v) => v.toFixed(1));
 bindSlider('dropPositionX', 'dropPositionX', (v) => v.toFixed(1));
 bindSlider('dropPositionY', 'dropPositionY', (v) => v.toFixed(1));
 bindSlider('dropWidth', 'dropWidth', (v) => v.toFixed(1));
-bindSlider('dropVolumeM3', 'dropVolumeM3', (v) => v.toFixed(0));
+
+// Volume's max is MAX_DROP_DEPTH_FRACTION * activeWorldWidth^3 (see above), so the slider's raw
+// position is a fixed 0..DROP_VOLUME_SLIDER_STEPS remapped through a cubic curve:
+// t^3 grows slowly near 0, which keeps fine control over small volumes (shallow drops,
+// where most of the useful range is) and saves the big numbers for the end of the travel.
+const DROP_VOLUME_SLIDER_STEPS = 1000;
+const DROP_VOLUME_CURVE_EXPONENT = 3;
+function currentDropVolumeMax() {
+    return MAX_DROP_DEPTH_FRACTION * activeWorldWidth ** 3;
+}
+function dropVolumeRawToValue(raw) {
+    const t = raw / DROP_VOLUME_SLIDER_STEPS;
+    return Math.pow(t, DROP_VOLUME_CURVE_EXPONENT) * currentDropVolumeMax();
+}
+function dropVolumeValueToRaw(value) {
+    const max = currentDropVolumeMax();
+    const t = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0;
+    return Math.round(Math.pow(t, 1 / DROP_VOLUME_CURVE_EXPONENT) * DROP_VOLUME_SLIDER_STEPS);
+}
+const dropVolumeInput = el('dropVolumeM3');
+const dropVolumeValueEl = el('dropVolumeM3Value');
+dropVolumeInput.min = '0';
+dropVolumeInput.max = String(DROP_VOLUME_SLIDER_STEPS);
+dropVolumeInput.step = '1';
+dropVolumeInput.value = String(dropVolumeValueToRaw(params.dropVolumeM3));
+dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
+dropVolumeInput.addEventListener('input', () => {
+    params.dropVolumeM3 = dropVolumeRawToValue(parseFloat(dropVolumeInput.value));
+    dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
+});
+
+// The max depends on the active tank width, so when that changes the volume is kept
+// as-is (it's a physical quantity) and only clamped if the new max is below it. The
+// handle is re-derived from the value.
+function refreshDropVolumeSlider() {
+    params.dropVolumeM3 = Math.min(params.dropVolumeM3, currentDropVolumeMax());
+    dropVolumeInput.value = String(dropVolumeValueToRaw(params.dropVolumeM3));
+    dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
+}
 
 // The drop sliders' ranges track the ACTIVE (generated) width, not the staged World
 // width slider - dropping only ever makes sense within the area that's actually been
@@ -324,7 +406,7 @@ function syncDropRangesToActiveWidth() {
     el('dropPositionX').max = String(activeWorldWidth);
     el('dropPositionY').max = String(activeWorldWidth);
     el('dropWidth').max = String(activeWorldWidth);
-    el('dropVolumeM3').max = String(Math.round(DROP_VOLUME_MAX_DEPTH_FRACTION * activeWorldWidth ** 3));
+    refreshDropVolumeSlider();
 }
 syncDropRangesToActiveWidth();
 
@@ -333,6 +415,9 @@ el('showOutline').addEventListener('change', (e) => { params.showOutline = e.tar
 
 el('terrainAsMesh').checked = params.terrainAsMesh;
 el('terrainAsMesh').addEventListener('change', (e) => { params.terrainAsMesh = e.target.checked; });
+
+el('fetchImagery').checked = params.fetchImagery;
+el('fetchImagery').addEventListener('change', (e) => { params.fetchImagery = e.target.checked; });
 
 // ---- real terrain (elevation tiles) ----
 const loadRealTerrainBtn = el('loadRealTerrainBtn');
@@ -353,7 +438,8 @@ function updateRealTerrainStatus() {
             `(${realTerrain.minElevation.toFixed(0)} m to ${(realTerrain.minElevation + realTerrain.reliefMeters).toFixed(0)} m altitude), ` +
             `${realTerrain.gridWidth}x${realTerrain.gridHeight} samples` +
             (realTerrain.hadNoData ? ' (some cells had no data and were filled from neighbors)' : '') +
-            (realTerrain.hadOcean ? ' (patch includes ocean, clamped to sea level)' : '');
+            (realTerrain.hadOcean ? ' (patch includes ocean, clamped to sea level)' : '') +
+            (imageryTexture ? ' + satellite imagery' : '');
     } else {
         realTerrainStatus.textContent = 'Not loaded yet';
     }
@@ -373,7 +459,10 @@ loadRealTerrainBtn.addEventListener('click', async () => {
 
     try {
         const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, params.worldWidth);
-        const result = await MireiaElevationTiles.build(bbox);
+        const [result, imagery] = await Promise.all([
+            MireiaElevationTiles.build(bbox),
+            params.fetchImagery ? MireiaTileMosaic.build(bbox, { urlTemplate: SATELLITE_IMAGERY_URL_TEMPLATE }) : Promise.resolve(null),
+        ]);
 
         const wasFilled = fillNoDataInPlace(result.heightfield, result.gridWidth, result.gridHeight);
         const hadOcean = clampSeaLevelInPlace(result.heightfield);
@@ -393,6 +482,13 @@ loadRealTerrainBtn.addEventListener('click', async () => {
         realTerrain.minElevation = min;
         realTerrain.hadNoData = wasFilled; // some cells were void and got filled from neighbors - see updateRealTerrainStatus
         realTerrain.hadOcean = hadOcean;   // some cells were real bathymetry, clamped to sea level - see updateRealTerrainStatus
+
+        // imagery doesn't need the coveredBbox to match the elevation fetch's exactly -
+        // it's draped 0..1 across the tank the same simplified way heightfieldSampler
+        // already treats the heightfield, ignoring the small quantization difference
+        // between the two fetches' actual tile-boundary extents.
+        if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
+        if (imagery) { imageryTexture = createImageTexture(gl, imagery.canvas); }
 
         params.terrainSource = 'real';
         activeWorldWidth = params.worldWidth;
@@ -436,6 +532,10 @@ regenerateTerrainBtn.addEventListener('click', () => {
     params.terrainSource = 'procedural';
     terrainSeed++;
     activeWorldWidth = params.worldWidth;
+    // procedural terrain doesn't correspond to any real place, so any imagery from a
+    // previous real-terrain load no longer means anything - drop it rather than leaving
+    // a stale satellite photo draped over made-up hills
+    if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
     rebuildTerrainAndSim();
     frameCamera();
     syncDropRangesToActiveWidth();
@@ -538,8 +638,8 @@ function frame() {
     }
     // when STOPPED: skip the two passes above, draw keeps showing the frozen state
 
-    // the pick plane follows the terrain so panning/zooming lands about where you point
-    cameraController.groundZ = currentSceneHeight() * 0.5;
+    // (pan/orbit/zoom's pick-plane height is now sampled from the real terrain directly
+    // by CameraController itself - see _pickPlaneZ - not set from here anymore)
 
     // draw the terrain, then the water on top of it
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

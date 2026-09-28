@@ -80,6 +80,13 @@
       <button id="regenerateTerrainBtn">Random</button>
       <button id="loadRealTerrainBtn">Pull from real life</button>
     </div>
+
+    <div class="field checkbox-field">
+      <label for="fetchImagery">Also pull satellite imagery texture</label>
+      <input type="checkbox" id="fetchImagery" />
+    </div>
+    <p class="info">Imagery: Esri World Imagery (attribution required when shown)</p>
+
     <p id="realTerrainStatus" class="info"></p>
 
     <hr />
@@ -105,7 +112,7 @@
 
     <div class="field">
       <label for="dropVolumeM3">Drop volume (m^3)</label>
-      <input type="range" id="dropVolumeM3" min="0" max="100000" step="10" />
+      <input type="range" id="dropVolumeM3" min="0" max="1000" step="1" />
       <span id="dropVolumeM3Value" class="value"></span>
     </div>
     <p id="dropDepthInfo" class="info"></p>

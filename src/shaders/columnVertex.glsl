@@ -12,6 +12,9 @@ uniform float u_gapFraction;  // fraction of each column's width left empty as a
 uniform int u_layer;          // 0 = terrain (z 0 -> terrain top), 1 = water (terrain top -> water top)
 
 out vec3 v_normal;
+out vec2 v_texCoord; // derived from world xy below, not a separate attribute - same
+                      // u = x/worldWidth, v = 1 - y/worldWidth convention MireiaTerrainMesh.js
+                      // uses for the mesh, so the same imagery lines up on both renderers
 
 // water shallower than this isn't drawn at all - a zero-height box would sit exactly on the terrain top and z-fight with it
 const float MIN_DRAW_DEPTH = 0.001;
@@ -27,6 +30,7 @@ void main() {
     if (u_layer == 1 && waterDepth < MIN_DRAW_DEPTH) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside the clip volume, whole box gets dropped
         v_normal = vec3(0.0);
+        v_texCoord = vec2(0.0);
         return;
     }
 
@@ -44,4 +48,5 @@ void main() {
 
     gl_Position = u_viewProj * vec4(pos, 1.0);
     v_normal = a_normal;
+    v_texCoord = vec2(pos.x / u_worldWidth, 1.0 - pos.y / u_worldWidth);
 }
