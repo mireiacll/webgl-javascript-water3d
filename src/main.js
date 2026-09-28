@@ -13,6 +13,8 @@ import { buildTerrainHeightTextureFromSampler } from './core/TerrainHeightTextur
 import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrainMesh.js';
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
 import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
+import { initUI } from './ui.js';
+import { computeBboxFromCenter, fillNoDataInPlace, clampSeaLevelInPlace, createImageTexture } from './geo/terrainUtils.js';
 
 const DEFAULT_COLUMN_COUNT = 100;
 const DEFAULT_WORLD_WIDTH = 200.0;
@@ -24,7 +26,6 @@ const DEFAULT_TERRAIN_HEIGHT_SCALE = 10.0;
 const DEFAULT_TERRAIN_SEED = 1;
 const DEFAULT_DROP_WIDTH = 20.0;
 const DEFAULT_DROP_VOLUME_M3 = 800;
-const MAX_DROP_DEPTH_FRACTION = 0.05;
 const SATELLITE_IMAGERY_URL_TEMPLATE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
@@ -99,74 +100,6 @@ function getCurrentHeightSampler(worldWidth) {
         return heightfieldSampler(realTerrain.heightfield, realTerrain.gridWidth, realTerrain.gridHeight, worldWidth, worldWidth);
     }
     return proceduralHeightSampler(worldWidth, params.terrainHeightScale, terrainSeed);
-}
-
-// Converts a square meter extent to an approximate longitude/latitude box.
-function computeBboxFromCenter(centerLon, centerLat, widthMeters) {
-    const METERS_PER_DEGREE_LAT = 111320;
-    const dLat = (widthMeters / 2) / METERS_PER_DEGREE_LAT;
-    const dLon = (widthMeters / 2) / (METERS_PER_DEGREE_LAT * Math.cos(centerLat * Math.PI / 180));
-    const minX = centerLon - dLon, maxX = centerLon + dLon;
-    const minY = centerLat - dLat, maxY = centerLat + dLat;
-    return { getMinX: () => minX, getMaxX: () => maxX, getMinY: () => minY, getMaxY: () => maxY };
-}
-
-// Keep real bathymetry; only fill values outside plausible Earth elevations.
-const MIN_PLAUSIBLE_METERS = -12000;
-const MAX_PLAUSIBLE_METERS = 9500;
-function fillNoDataInPlace(heightfield, gridWidth, gridHeight) {
-    const isNoData = (v) => v < MIN_PLAUSIBLE_METERS || v > MAX_PLAUSIBLE_METERS;
-    const total = heightfield.length;
-    const visited = new Uint8Array(total);
-    const queue = new Int32Array(total);
-    let queueEnd = 0;
-    let validCount = 0;
-
-    for (let i = 0; i < total; i++) {
-        if (!isNoData(heightfield[i])) {
-            visited[i] = 1;
-            queue[queueEnd++] = i;
-            validCount++;
-        }
-    }
-    if (validCount === total) return false;
-    if (validCount === 0) {
-        throw new Error('fetched elevation is entirely no-data - try a different location or a smaller width');
-    }
-
-    for (let head = 0; head < queueEnd; head++) {
-        const idx = queue[head];
-        const x = idx % gridWidth;
-        const y = (idx / gridWidth) | 0;
-        if (x > 0 && !visited[idx - 1]) { visited[idx - 1] = 1; heightfield[idx - 1] = heightfield[idx]; queue[queueEnd++] = idx - 1; }
-        if (x < gridWidth - 1 && !visited[idx + 1]) { visited[idx + 1] = 1; heightfield[idx + 1] = heightfield[idx]; queue[queueEnd++] = idx + 1; }
-        if (y > 0 && !visited[idx - gridWidth]) { visited[idx - gridWidth] = 1; heightfield[idx - gridWidth] = heightfield[idx]; queue[queueEnd++] = idx - gridWidth; }
-        if (y < gridHeight - 1 && !visited[idx + gridWidth]) { visited[idx + gridWidth] = 1; heightfield[idx + gridWidth] = heightfield[idx]; queue[queueEnd++] = idx + gridWidth; }
-    }
-    return true;
-}
-
-function clampSeaLevelInPlace(heightfield) {
-    let clamped = false;
-    for (let i = 0; i < heightfield.length; i++) {
-        if (heightfield[i] < 0) {
-            heightfield[i] = 0;
-            clamped = true;
-        }
-    }
-    return clamped;
-}
-
-function createImageTexture(gl, canvas) {
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    return texture;
 }
 
 let activeWorldWidth = params.worldWidth;
@@ -248,127 +181,24 @@ terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), 
 let resourceColumnCount = params.columnCount;
 let state = SimState.IDLE;
 
-// Bind the control panel to the simulation parameters.
-const el = (id) => document.getElementById(id);
-const stateLabel = el('stateLabel');
-const startBtn = el('startBtn');
-const stopBtn = el('stopBtn');
-const deleteBtn = el('deleteBtn');
-const cflInfo = el('cflInfo');
-const columnWidthInfo = el('columnWidthInfo');
-const dropDepthInfo = el('dropDepthInfo');
-const regenerateTerrainBtn = el('regenerateTerrainBtn');
-
-const lockedWhileRunningIds = [
-    'columnCount', 'worldWidth', 'damping',
-    'terrainHeightScale', 'regenerateTerrainBtn',
-    'dropPositionX', 'dropPositionY', 'dropWidth', 'dropVolumeM3',
-    'centerLat', 'centerLon', 'loadRealTerrainBtn',
-];
-
-function bindSlider(id, paramKey, format = (v) => v) {
-    const input = el(id);
-    const valueEl = el(`${id}Value`);
-    input.value = params[paramKey];
-    valueEl.textContent = format(params[paramKey]);
-    input.addEventListener('input', () => {
-        params[paramKey] = parseFloat(input.value);
-        valueEl.textContent = format(params[paramKey]);
-    });
-}
-
-bindSlider('dt', 'dt', (v) => v.toFixed(4));
-bindSlider('columnCount', 'columnCount', (v) => Math.round(v));
-bindSlider('worldWidth', 'worldWidth', (v) => v.toFixed(1));
-bindSlider('damping', 'damping', (v) => v.toFixed(3));
-bindSlider('terrainHeightScale', 'terrainHeightScale', (v) => v.toFixed(1));
-bindSlider('dropPositionX', 'dropPositionX', (v) => v.toFixed(1));
-bindSlider('dropPositionY', 'dropPositionY', (v) => v.toFixed(1));
-bindSlider('dropWidth', 'dropWidth', (v) => v.toFixed(1));
-
-// A cubic mapping gives the volume slider more precision near zero.
-const DROP_VOLUME_SLIDER_STEPS = 1000;
-const DROP_VOLUME_CURVE_EXPONENT = 3;
-function currentDropVolumeMax() {
-    return MAX_DROP_DEPTH_FRACTION * activeWorldWidth ** 3;
-}
-function dropVolumeRawToValue(raw) {
-    const t = raw / DROP_VOLUME_SLIDER_STEPS;
-    return Math.pow(t, DROP_VOLUME_CURVE_EXPONENT) * currentDropVolumeMax();
-}
-function dropVolumeValueToRaw(value) {
-    const max = currentDropVolumeMax();
-    const t = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0;
-    return Math.round(Math.pow(t, 1 / DROP_VOLUME_CURVE_EXPONENT) * DROP_VOLUME_SLIDER_STEPS);
-}
-const dropVolumeInput = el('dropVolumeM3');
-const dropVolumeValueEl = el('dropVolumeM3Value');
-dropVolumeInput.min = '0';
-dropVolumeInput.max = String(DROP_VOLUME_SLIDER_STEPS);
-dropVolumeInput.step = '1';
-dropVolumeInput.value = String(dropVolumeValueToRaw(params.dropVolumeM3));
-dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
-dropVolumeInput.addEventListener('input', () => {
-    params.dropVolumeM3 = dropVolumeRawToValue(parseFloat(dropVolumeInput.value));
-    dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
+// Control panel lives in ui.js; it reads/writes params and calls the actions below.
+const ui = initUI({
+    params,
+    realTerrain,
+    SimState,
+    getState: () => state,
+    getActiveWorldWidth: () => activeWorldWidth,
+    hasImagery: () => !!imageryTexture,
+    actions: { start: startSim, stop: stopSim, remove: deleteSim, regenerateTerrain, loadRealTerrain },
 });
 
-function refreshDropVolumeSlider() {
-    params.dropVolumeM3 = Math.min(params.dropVolumeM3, currentDropVolumeMax());
-    dropVolumeInput.value = String(dropVolumeValueToRaw(params.dropVolumeM3));
-    dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
-}
-
-function syncDropRangesToActiveWidth() {
-    el('dropPositionX').max = String(activeWorldWidth);
-    el('dropPositionY').max = String(activeWorldWidth);
-    el('dropWidth').max = String(activeWorldWidth);
-    refreshDropVolumeSlider();
-}
-syncDropRangesToActiveWidth();
-
-el('showOutline').checked = params.showOutline;
-el('showOutline').addEventListener('change', (e) => { params.showOutline = e.target.checked; });
-
-el('terrainAsMesh').checked = params.terrainAsMesh;
-el('terrainAsMesh').addEventListener('change', (e) => { params.terrainAsMesh = e.target.checked; });
-
-el('fetchImagery').checked = params.fetchImagery;
-el('fetchImagery').addEventListener('change', (e) => { params.fetchImagery = e.target.checked; });
-
-const loadRealTerrainBtn = el('loadRealTerrainBtn');
-const realTerrainStatus = el('realTerrainStatus');
-
-el('centerLat').value = params.centerLat;
-el('centerLon').value = params.centerLon;
-el('centerLat').addEventListener('input', (e) => { params.centerLat = parseFloat(e.target.value); });
-el('centerLon').addEventListener('input', (e) => { params.centerLon = parseFloat(e.target.value); });
-
-function updateRealTerrainStatus() {
-    if (realTerrain.loading) {
-        realTerrainStatus.textContent = 'Loading elevation tiles...';
-    } else if (realTerrain.error) {
-        realTerrainStatus.textContent = `Failed to load: ${realTerrain.error}`;
-    } else if (realTerrain.heightfield) {
-        realTerrainStatus.textContent = `Loaded - relief ${realTerrain.reliefMeters.toFixed(1)} m ` +
-            `(${realTerrain.minElevation.toFixed(0)} m to ${(realTerrain.minElevation + realTerrain.reliefMeters).toFixed(0)} m altitude), ` +
-            `${realTerrain.gridWidth}x${realTerrain.gridHeight} samples` +
-            (realTerrain.hadNoData ? ' (some cells had no data and were filled from neighbors)' : '') +
-            (realTerrain.hadOcean ? ' (patch includes ocean, clamped to sea level)' : '') +
-            (imageryTexture ? ' + satellite imagery' : '');
-    } else {
-        realTerrainStatus.textContent = 'Not loaded yet';
-    }
-}
-updateRealTerrainStatus();
-
 // Load elevation and optional imagery, then apply them as one terrain update.
-loadRealTerrainBtn.addEventListener('click', async () => {
+async function loadRealTerrain() {
     if (state !== SimState.IDLE || realTerrain.loading) return;
 
     realTerrain.loading = true;
     realTerrain.error = null;
-    updateRealTerrainStatus();
+    ui.updateRealTerrainStatus();
 
     try {
         const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, params.worldWidth);
@@ -403,34 +233,34 @@ loadRealTerrainBtn.addEventListener('click', async () => {
         activeWorldWidth = params.worldWidth;
         rebuildTerrainAndSim();
         frameCamera();
-        syncDropRangesToActiveWidth();
+        ui.syncDropRanges();
     } catch (err) {
         realTerrain.error = err.message;
     } finally {
         realTerrain.loading = false;
-        updateRealTerrainStatus();
+        ui.updateRealTerrainStatus();
     }
-});
+}
 
 // Start resets the drop; stop freezes it; delete returns to the live preview.
-startBtn.addEventListener('click', () => {
+function startSim() {
     if (state !== SimState.IDLE) return;
     const { dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = computeDropRegion();
     resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     state = SimState.RUNNING;
-});
+}
 
-stopBtn.addEventListener('click', () => {
+function stopSim() {
     if (state !== SimState.RUNNING) return;
     state = SimState.STOPPED;
-});
+}
 
-deleteBtn.addEventListener('click', () => {
+function deleteSim() {
     if (state !== SimState.STOPPED) return;
     state = SimState.IDLE;
-});
+}
 
-regenerateTerrainBtn.addEventListener('click', () => {
+function regenerateTerrain() {
     if (state !== SimState.IDLE) return;
     params.terrainSource = 'procedural';
     terrainSeed++;
@@ -438,8 +268,9 @@ regenerateTerrainBtn.addEventListener('click', () => {
     if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
     rebuildTerrainAndSim();
     frameCamera();
-    syncDropRangesToActiveWidth();
-});
+    ui.syncDropRanges();
+}
+
 
 // Convert the requested drop into grid cells and depth for its actual footprint.
 function computeDropRegion() {
@@ -460,25 +291,6 @@ function computeDropRegion() {
     return { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropSizeX, dropSizeY, dropDepth };
 }
 
-// Refresh state and numeric readouts after each frame.
-function updatePanel(dropInfo, substeps, subDt) {
-    stateLabel.textContent = `State: ${state}`;
-
-    startBtn.disabled = state !== SimState.IDLE;
-    stopBtn.disabled = state !== SimState.RUNNING;
-    deleteBtn.disabled = state !== SimState.STOPPED;
-
-    for (const id of lockedWhileRunningIds) {
-        el(id).disabled = state !== SimState.IDLE;
-    }
-    el('terrainHeightScale').disabled = el('terrainHeightScale').disabled || params.terrainSource === 'real';
-
-    cflInfo.textContent = `CFL: ${substeps} substep${substeps === 1 ? '' : 's'} per frame (${subDt.toFixed(5)} s each)`;
-    columnWidthInfo.textContent = `-> column width d = ${dropInfo.columnWidth.toFixed(3)} m`;
-    dropDepthInfo.textContent = `-> depth per column = ${dropInfo.dropDepth.toFixed(3)} m ` +
-        `(spanning ${dropInfo.dropEndCol - dropInfo.dropStartCol} x ${dropInfo.dropEndRow - dropInfo.dropStartRow} columns, ` +
-        `${dropInfo.dropSizeX.toFixed(1)} x ${dropInfo.dropSizeY.toFixed(1)} m)`;
-}
 
 // Advance simulation state, render the scene, then schedule the next frame.
 function frame() {
@@ -550,7 +362,7 @@ function frame() {
         sim.columnRenderer.renderWaterOutline(sim.terrainTexture, waterTexture, activeWorldWidth, ...OUTLINE_COLOR);
     }
 
-    updatePanel(dropInfo, substeps, subDt);
+    ui.update(dropInfo, substeps, subDt);
 
     requestAnimationFrame(frame);
 }
