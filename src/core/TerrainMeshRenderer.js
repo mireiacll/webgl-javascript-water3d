@@ -1,15 +1,9 @@
 import { buildProgram } from './glUtils.js';
 import vertexSource from '../shaders/terrainMeshVertex.glsl?raw';
-import fragmentSource from '../shaders/terrainMeshFragment.glsl?raw'; // same shader columnFragment.glsl uses
+import fragmentSource from '../shaders/terrainMeshFragment.glsl?raw';
 import { MireiaTerrainMesh, proceduralHeightSampler } from '../geo/MireiaTerrainMesh.js';
 
-// Draws the terrain as a real triangulated mesh (via MireiaTerrainMesh's
-// Vertex/Triangle/Surface/Primitive/Mesh/Node/Scene pipeline), independent of
-// ColumnRenderer's instanced boxes - ColumnRenderer still draws the water columns
-// exactly as before, this class only replaces the old renderTerrain() box draw.
-//
-// Deliberately doesn't go through the engine's Renderer/Shader/MireiaFBO - this is
-// a standalone GPU upload + draw, sized for one static mesh, not a general scene graph.
+// Builds the sampled terrain on the CPU, uploads it once, then draws indexed triangles.
 export class TerrainMeshRenderer {
     constructor(gl) {
         this.gl = gl;
@@ -27,38 +21,27 @@ export class TerrainMeshRenderer {
         this.vertexBuffer = null;
         this.indexBuffer = null;
         this.indexCount = 0;
-        this.imageryTexture = null; // optional satellite imagery draped over the mesh - see setImageryTexture()
+        this.imageryTexture = null;
     }
 
-    // (re)builds the mesh from the same procedural height function
-    // TerrainHeightTextureBuilder.js uses for the sim's terrain texture - same
-    // worldWidth/heightScale/seed here means the visual mesh and the water sim's
-    // terrain agree on shape, even though one samples it as a continuous function
-    // and the other bakes it into a per-column texture.
     build(worldWidth, heightScale, seed, resolution = 100) {
         this.buildFromSampler(proceduralHeightSampler(worldWidth, heightScale, seed), worldWidth, resolution);
     }
 
-    // same mesh-building logic, but driven by any height(x, y) function - used directly
-    // for real elevation data (heightfieldSampler from MireiaTerrainMesh.js), so the
-    // procedural path above is really just one caller of this, not a separate code path
     buildFromSampler(heightSampler, worldWidth, resolution = 100) {
         const gl = this.gl;
         this.dispose();
 
+        // Pack each vertex as position, normal, and imagery UV.
         const mesh = new MireiaTerrainMesh(heightSampler, worldWidth, worldWidth, resolution);
         const vertices = mesh.getVertices();
-        const indices = mesh.getScene().getRoot().getIndices(); // also assigns each vertex's buffer index
+        const indices = mesh.getScene().getRoot().getIndices();
 
-        // position(3) + normal(3) + texCoord(2) per vertex - texCoord is only used when
-        // an imagery texture is set (see render()); with none set the shader falls back
-        // to flat u_color exactly as before, so this costs nothing when unused.
         const data = new Float32Array(vertices.length * 8);
         for (let i = 0; i < vertices.length; i++) {
             const p = vertices[i].getPosition();
             const n = vertices[i].getNormal();
-            const uv = vertices[i].getTexCoord(); // NOTE: assumes MireiaVertex exposes this - if the
-                                                   // real getter is named differently, this throws here
+            const uv = vertices[i].getTexCoord();
             data.set([p.getX(), p.getY(), p.getZ(), n.getX(), n.getY(), n.getZ(), uv.getX(), uv.getY()], i * 8);
         }
 
@@ -85,9 +68,6 @@ export class TerrainMeshRenderer {
         gl.bindVertexArray(null);
     }
 
-    // Satellite imagery draped over the mesh using each vertex's baked-in UV. Doesn't
-    // own the texture (main.js does, since the same texture is also handed to
-    // ColumnRenderer), so this never deletes it, just stops using it.
     setImageryTexture(texture) { this.imageryTexture = texture; }
     clearImageryTexture() { this.imageryTexture = null; }
 

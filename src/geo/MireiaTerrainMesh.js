@@ -9,16 +9,7 @@ import { MireiaMat4 } from '../math/MireiaMat4.js';
 import { createFace } from '../geometry/geometryUtils.js';
 import { MireiaColor4 } from '../math/MireiaColor4.js';
 
-// Builds a real triangulated terrain surface - (resolution+1) x (resolution+1)
-// VERTICES stitched into `resolution * resolution` quads (createFace, same helper
-// MireiaGroundPlane uses), each split into 2 triangles like every other primitive
-// here. This is deliberately decoupled from the water sim's column grid: heights
-// come from a sampler function, not from the sim's texture, so this class doesn't
-// care whether that sampler is procedural noise or real elevation data - see
-// proceduralHeightSampler() below and MireiaElevationTiles.js for the two sources.
-//
-// Vertices are shared at cell corners (unlike the water sim's per-column boxes),
-// so calculateSmoothNormals() gives a continuous, non-blocky surface.
+// Builds a shared-vertex terrain mesh from a height sampler.
 export class MireiaTerrainMesh {
     #primitive;
     #transform;
@@ -36,7 +27,7 @@ export class MireiaTerrainMesh {
                 const x = (col / resolution) * worldWidth;
                 const z = heightSampler(x, y);
                 const u = col / resolution;
-                const v = 1 - row / resolution; // texture V grows downward, same convention as MireiaGroundPlane
+                const v = 1 - row / resolution;
                 grid[row][col] = new MireiaVertex(new MireiaVec3(x, y, z), color, new MireiaVec2(u, v));
             }
         }
@@ -44,7 +35,6 @@ export class MireiaTerrainMesh {
         this.#primitive = new MireiaPrimitive();
         for (let row = 0; row < resolution; row++) {
             for (let col = 0; col < resolution; col++) {
-                // same corner order as MireiaGroundPlane's sw/se/ne/nw quad
                 const sw = grid[row][col];
                 const se = grid[row][col + 1];
                 const ne = grid[row + 1][col + 1];
@@ -53,9 +43,6 @@ export class MireiaTerrainMesh {
             }
         }
 
-        // flat per-face normals first (cheap, always correct), then average them per
-        // shared vertex for a smooth surface - the two-pass approach MireiaSurface
-        // already supports via calculateVerticesNormal() + calculateSmoothNormals()
         this.#primitive.calculateVerticesNormal();
         for (const surface of this.#primitive.getSurfaces()) {
             surface.calculateSmoothNormals();
@@ -71,12 +58,6 @@ export class MireiaTerrainMesh {
     getVertices() { return this.#primitive.getVertices(); }
 }
 
-// Same multi-octave sine profile as TerrainHeightTextureBuilder.js from the water
-// sim, but as a continuous function instead of a per-column lookup - use this while
-// proving out the mesh pipeline, then swap in MireiaElevationTiles' sampler once
-// that's wired up. Keeping the exact same math means the mesh terrain and the
-// water sim's terrain texture agree on shape for a given seed, if you ever want
-// to compare them side by side.
 export function proceduralHeightSampler(worldWidth, heightScale, seed) {
     const OCTAVES = 5, PERSISTENCE = 0.5, LACUNARITY = 2.2, BASE_WAVELENGTH_FRACTION = 0.6;
 
@@ -112,16 +93,7 @@ export function proceduralHeightSampler(worldWidth, heightScale, seed) {
     };
 }
 
-// Wraps a heightfield array laid out row-major (row * gridWidth + col), the SAME
-// layout TerrainHeightTextureBuilder.js and MireiaElevationTiles.js both use, into
-// a continuous sampler via bilinear interpolation - so any (resolution+1) mesh
-// resolution can sample a fixed-size heightfield smoothly, independent of how
-// many samples the source data actually has.
-// gridWidth/gridHeight are taken separately (NOT a single square gridSize) because
-// MireiaElevationTiles' tile mosaic is a cols x rows rectangle that is square only
-// by coincidence - the bbox is centered on an arbitrary lat/lon, not a tile
-// boundary. Using one dimension for both axes misaligns every row whenever the
-// fetched area isn't tile-square, which reads as garbage/flattened heights.
+// Bilinearly samples row-major data; the source grid may be rectangular.
 export function heightfieldSampler(heightfield, gridWidth, gridHeight, worldWidth, worldHeight) {
     return function height(x, y) {
         const fx = (x / worldWidth) * (gridWidth - 1);

@@ -3,6 +3,7 @@ import { MireiaRect2D } from "../geometry/MireiaRect2D";
 
 const TILE_SIZE=256;
 
+// Fetch and stitch imagery tiles into one canvas for terrain texturing.
 export class MireiaTileMosaic{
     static async build(bbox, {urlTemplate,maxTilesPerSide=8}={}){
         if(!urlTemplate){
@@ -29,6 +30,7 @@ export class MireiaTileMosaic{
 
         console.log(`[MireiaTileMosaic] fetching ${tiles.length} tile(s) at zoom ${zoom} (${cols}x${rows} grid)`);
 
+        // Fetch in parallel, then place each image by its offset in the tile grid.
         await Promise.all(tiles.map(async ({ x, y, zoom }) => {
             const url = urlTemplate
                 .replace('{z}', zoom)

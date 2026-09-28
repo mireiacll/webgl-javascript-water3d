@@ -2,7 +2,7 @@
 precision highp float;
 
 in vec2 v_texCoord;
-// r = outflow to the RIGHT (+x) neighbor, g = LEFT (-x), b = UP (+y), a = DOWN (-y), all >= 0.
+// Each output component is nonnegative flow toward one neighbor: +x, -x, +y, -y.
 out vec4 outFlux;
 
 uniform sampler2D u_height;  // water DEPTH (r) from WaterFBO
@@ -29,6 +29,7 @@ float pipeFlux(vec2 offset, float fOld, float terrainHere, float surfHere) {
 }
 
 void main() {
+    // Compute outgoing flow, then cap it by critical speed and available water.
     vec2 cell = floor(v_texCoord * u_columnCount);
     bool hasRight = cell.x < u_columnCount - 1.0;
     bool hasLeft  = cell.x > 0.5;

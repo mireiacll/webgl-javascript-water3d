@@ -19,7 +19,7 @@ export class MireiaTriangle {
     return [this.#v0, this.#v1, this.#v2];
   }
 
-  // Raw cross-product normal 
+  // Winding order determines the direction of this face normal.
   calculateNormal() {
     const p0 = this.#v0.getPosition();
     const p1 = this.#v1.getPosition();

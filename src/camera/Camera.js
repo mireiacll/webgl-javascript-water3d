@@ -1,8 +1,5 @@
-// Z-up world : the tank lies in the XY plane, height is Z.
-// The camera is just a position + yaw/pitch
-// yaw = 0 looks along +y, positive yaw turns toward +x. pitch < 0 looks down.
-
-// column-major 4x4 multiply, out = a * b - same layout WebGL expects
+// Z-up world: the tank lies in XY. Yaw zero points along +Y; negative pitch looks down.
+// Matrices use WebGL's column-major layout.
 export function multiplyMat4(a, b) {
     const out = new Float32Array(16);
     for (let c = 0; c < 4; c++) {
@@ -31,8 +28,8 @@ export class Camera {
         this.position = [0, -150, 120];
         this.yaw = 0;
         this.pitch = -0.6;
-        this.fov = Math.PI / 3;   // vertical, radians
-        this.near = 0.1;          // has to be positive - the java default of -0.1 breaks the projection
+        this.fov = Math.PI / 3;
+        this.near = 0.1;
         this.far = 5000;
     }
 
@@ -45,7 +42,6 @@ export class Camera {
         ];
     }
 
-    // forward x worldUp(0,0,1), worked out by hand since pitch is clamped away from +-90 deg
     getRight() {
         return [Math.cos(this.yaw), -Math.sin(this.yaw), 0];
     }
@@ -54,7 +50,6 @@ export class Camera {
         return cross(this.getRight(), this.getForward());
     }
 
-    // point the camera at `target` from `distance` away, using the given yaw/pitch
     lookAt(target, distance, yaw, pitch) {
         this.yaw = yaw;
         this.pitch = pitch;
@@ -87,8 +82,8 @@ export class Camera {
         return new Float32Array([
             f / aspect, 0, 0, 0,
             0, f, 0, 0,
-            0, 0, -(this.near + this.far) * rangeInv, -1,   // negated
-            0, 0, -2 * this.near * this.far * rangeInv, 0,   // negated
+            0, 0, -(this.near + this.far) * rangeInv, -1,
+            0, 0, -2 * this.near * this.far * rangeInv, 0,
         ]);
     }
     
@@ -96,7 +91,6 @@ export class Camera {
         return multiplyMat4(this.getProjectionMatrix(aspect), this.getViewMatrix());
     }
 
-    // world-space direction of the ray through a screen point (ndc -1..1, y up)
     rayDirection(ndcX, ndcY, aspect) {
         const tanHalfFov = Math.tan(this.fov / 2);
         const f = this.getForward();

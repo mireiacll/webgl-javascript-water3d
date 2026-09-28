@@ -1,8 +1,6 @@
 #version 300 es
 
-// real triangulated terrain, unlike columnVertex.glsl - positions, normals and
-// texcoords come straight from MireiaTerrainMesh's CPU-built vertex buffer, nothing
-// is looked up from a texture or derived from gl_InstanceID here.
+// Attributes come from the CPU-built mesh rather than per-column texture lookups.
 in vec3 a_position;
 in vec3 a_normal;
 in vec2 a_texCoord;

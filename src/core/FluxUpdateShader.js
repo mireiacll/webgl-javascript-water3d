@@ -1,7 +1,8 @@
 import { buildProgram } from './glUtils.js';
-import screenVertexSrc from '../shaders/screenVertex.glsl?raw'; // reused as-is
+import screenVertexSrc from '../shaders/screenVertex.glsl?raw';
 import fluxUpdateFragmentSrc from '../shaders/fluxUpdateFragment.glsl?raw';
 
+// Links the per-cell flux calculation with the shared full-screen vertex shader.
 export class FluxUpdateShader {
     constructor(gl) {
         this.gl = gl;
@@ -11,15 +12,13 @@ export class FluxUpdateShader {
         this.uHeightLoc = gl.getUniformLocation(this.program, 'u_height');
         this.uFluxLoc = gl.getUniformLocation(this.program, 'u_flux');
         this.uTerrainLoc = gl.getUniformLocation(this.program, 'u_terrain');
-        this.uTexelLoc = gl.getUniformLocation(this.program, 'u_texel'); // was u_texelX
+        this.uTexelLoc = gl.getUniformLocation(this.program, 'u_texel');
         this.uColumnCountLoc = gl.getUniformLocation(this.program, 'u_columnCount');
         this.uPipeAreaLoc = gl.getUniformLocation(this.program, 'u_pipeArea');
         this.uPipeLengthLoc = gl.getUniformLocation(this.program, 'u_pipeLength');
         this.uDtLoc = gl.getUniformLocation(this.program, 'u_dt');
         this.uDampingLoc = gl.getUniformLocation(this.program, 'u_damping');
 
-        // gl.uniform*(null/undefined, ...) is silently ignored, so a stale name here fails without any error.
-        // shout instead
         for (const [key, loc] of Object.entries(this)) {
             if (key.endsWith('Loc') && (loc === null || loc === undefined || loc === -1)) {
                 console.error(`FluxUpdateShader: "${key}" not found in the shader - old file or renamed uniform?`);

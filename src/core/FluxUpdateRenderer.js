@@ -1,5 +1,6 @@
 import { FluxUpdateShader } from './FluxUpdateShader.js';
 
+// Runs the flux shader once per grid cell using a full-screen quad.
 export class FluxUpdateRenderer {
     constructor(gl) {
         this.gl = gl;
@@ -36,14 +37,11 @@ export class FluxUpdateRenderer {
         gl.bindVertexArray(null);
     }
 
-    // heightTexId  = current WaterFBO texture (last frame's water depth/velocity)
-    // fluxTexId    = current FluxFBO texture (last frame's flux)
-    // terrainTexId = the fixed terrain height texture (never ping-pongs)
-    // columnCount is columns per side - the grid is columnCount x columnCount
     render(heightTexId, fluxTexId, terrainTexId, columnCount, pipeArea, pipeLength, dt, damping) {
         const gl = this.gl;
         gl.useProgram(this.shader.program);
 
+        // Bind the previous water/flux state and the fixed terrain field.
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, heightTexId);
         gl.uniform1i(this.shader.uHeightLoc, 0);

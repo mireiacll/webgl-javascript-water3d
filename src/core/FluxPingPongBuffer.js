@@ -1,5 +1,6 @@
 import { FluxFBO } from './FluxFBO.js';
 
+// Keep last-step flux separate from the target written by the current pass.
 export class FluxPingPongBuffer {
     constructor(gl, columnCount) {
         this.bufferA = new FluxFBO(gl, columnCount);

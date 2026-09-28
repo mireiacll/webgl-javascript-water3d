@@ -1,6 +1,7 @@
 export const MireiaTileMath = {
 
-    lonLatToTile(lon,lat,zoom){ // slippy map projection
+    // Convert geographic coordinates to a slippy-map tile at this zoom.
+    lonLatToTile(lon,lat,zoom){
         const n = Math.pow(2,zoom);
         const x = Math.floor((lon+180)/360*n);
         const latRad = (lat*Math.PI)/180;
@@ -8,6 +9,7 @@ export const MireiaTileMath = {
         return {x,y};
     },
 
+    // Return the northwest geographic corner of a tile.
     tileToLonLat(x,y,zoom){
         const n = Math.pow(2, zoom);
         const lon = (x / n) * 360 - 180;
@@ -16,7 +18,8 @@ export const MireiaTileMath = {
         return { lon, lat };
     },
 
-     chooseZoomForBbox(bbox, maxTilesPerSide = 8) {
+    // Choose the highest zoom that stays within the tile budget.
+    chooseZoomForBbox(bbox, maxTilesPerSide = 8) {
         for (let zoom = 18; zoom >= 1; zoom--) {
             const nw = this.lonLatToTile(bbox.getMinX(), bbox.getMaxY(), zoom);
             const se = this.lonLatToTile(bbox.getMaxX(), bbox.getMinY(), zoom);
@@ -29,6 +32,7 @@ export const MireiaTileMath = {
         return 1;
     },
 
+    // Enumerate every tile intersecting the bounding box.
     tilesForBbox(bbox, zoom) {
         const nw = this.lonLatToTile(bbox.getMinX(), bbox.getMaxY(), zoom);
         const se = this.lonLatToTile(bbox.getMaxX(), bbox.getMinY(), zoom);

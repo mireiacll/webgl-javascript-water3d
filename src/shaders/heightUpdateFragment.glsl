@@ -20,6 +20,7 @@ uniform vec2 u_pourEnd;
 uniform float u_pourRate; // depth added per second, m/s
 
 void main() {
+    // Combine neighbor inflow, local outflow, and any active pour for this cell.
     vec2 cell = floor(v_texCoord * u_columnCount);
 
     vec4 own = texture(u_flux, v_texCoord); // what THIS column sends right / left / up / down

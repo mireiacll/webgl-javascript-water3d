@@ -1,21 +1,10 @@
-// Builds a single-channel R32F texture holding one FIXED terrain height per
-// column - the floor the water sim rests on and flows over. Same call shape
-// as WaterHeightTextureBuilder.build(): CPU-side buffer, uploaded once,
-// texture handle returned directly (no FBO - this is only ever sampled,
-// never rendered into).
-//
-// The profile is a handful of sine waves at decreasing amplitude / increasing
-// frequency (a cheap fractal/"red" noise) with a random phase per octave,
-// so a given seed always regenerates the same terrain and a new seed
-// gives a different one. In 2D every octave also gets a random travel
-// direction, otherwise all the ridges would line up along one axis.
+// Builds a seeded terrain height texture (R32F), sampled by the water simulation.
 
 const OCTAVES = 5;
-const PERSISTENCE = 0.5;   // each octave has half the amplitude of the previous one
-const LACUNARITY = 2.2;    // each octave has ~2.2x the frequency of the previous one
-const BASE_WAVELENGTH_FRACTION = 0.6; // first (broadest) octave's wavelength, as a fraction of world width
+const PERSISTENCE = 0.5;
+const LACUNARITY = 2.2;
+const BASE_WAVELENGTH_FRACTION = 0.6;
 
-// mulberry32 - small seedable PRNG (java.util.Random has no JS equivalent)
 function makeRandom(seed) {
     let a = seed >>> 0;
     return function next() {
@@ -60,7 +49,6 @@ export function buildTerrainHeightTexture(gl, columnCount, worldWidth, heightSca
                 const along = x * dirX[o] + y * dirY[o];
                 raw += amplitude[o] * Math.sin(2 * Math.PI * along / wavelength[o] + phase[o]);
             }
-            // raw sits in [-amplitudeSum, amplitudeSum] - normalize to [0, 1], then scale to heightScale
             const normalized = (raw / amplitudeSum + 1) * 0.5;
             buffer[row * columnCount + col] = normalized * heightScale;
         }
@@ -81,11 +69,6 @@ function uploadHeightTexture(gl, columnCount, buffer) {
     return texture;
 }
 
-// Same per-column-center sampling convention as buildTerrainHeightTexture above
-// ((i+0.5)/columnCount*worldWidth), but driven by any height(x, y) function - real
-// elevation data via heightfieldSampler() from MireiaTerrainMesh.js, or anything else.
-// This is what lets the sim's terrain texture and TerrainMeshRenderer's visual mesh
-// both read from the exact same underlying height source, procedural or real.
 export function buildTerrainHeightTextureFromSampler(gl, columnCount, worldWidth, heightSampler) {
     const buffer = new Float32Array(columnCount * columnCount);
     for (let row = 0; row < columnCount; row++) {

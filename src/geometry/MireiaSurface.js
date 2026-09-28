@@ -39,6 +39,7 @@ export class MireiaSurface {
     }
   }
 
+  // Average adjacent face normals at shared vertices for a smooth mesh.
   calculateSmoothNormals(){
     const normalSums = new Map();
     for (const triangle of this.#triangles) {

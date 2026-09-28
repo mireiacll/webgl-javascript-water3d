@@ -1,6 +1,6 @@
 import { WaterFBO } from './WaterFBO.js';
 
-// current() = last frame's finalized (height, velocity); next() = this frame's
+// Read current water, render into next, then swap after the update pass.
 export class WaterPingPongBuffer {
     constructor(gl, columnCount) {
         this.bufferA = new WaterFBO(gl, columnCount);

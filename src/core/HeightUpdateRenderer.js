@@ -1,5 +1,6 @@
 import { HeightUpdateShader } from './HeightUpdateShader.js';
 
+// Applies this step's flux to water depth across the grid.
 export class HeightUpdateRenderer {
     constructor(gl) {
         this.gl = gl;
@@ -36,11 +37,7 @@ export class HeightUpdateRenderer {
         gl.bindVertexArray(null);
     }
 
-    // heightTexId = current WaterFBO texture (last frame's water depth/velocity)
-    // fluxTexId   = NEW FluxFBO texture
-    // pourStart*/pourEnd* = column rectangle receiving the pour (end is exclusive);
-    // pourRate = depth/second, pass 0 when nothing should be poured this frame
-    // (preview, paused, or pour finished)
+    // Pour bounds are column coordinates with an exclusive end; zero rate disables pouring.
     render(heightTexId, fluxTexId, columnCount, columnArea, dt, minHeight,
            pourStartCol, pourStartRow, pourEndCol, pourEndRow, pourRate) {
         const gl = this.gl;

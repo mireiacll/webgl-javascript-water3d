@@ -1,5 +1,6 @@
 import { MireiaSurface } from './MireiaSurface.js';
 
+// Groups surfaces and exposes their shared vertices and indices.
 export class MireiaPrimitive {
   #vertices;
   #surfaces;

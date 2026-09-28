@@ -11,8 +11,7 @@ uniform sampler2D u_texture; // satellite imagery draped over the surface via v_
 uniform float u_useTexture;  // 1 = sample u_texture for the base color, 0 = use flat u_color
 
 void main() {
-    // fixed world-space light so the boxes read as 3D without a full lighting setup.
-    // v_normal is the flat face normal, so no need to renormalize (and it's zero on the lines)
+    // Mesh normals are already normalized by the terrain builder.
     vec3 lightDir = normalize(vec3(0.35, -0.45, 0.82));
     float diffuse = max(dot(v_normal, lightDir), 0.0);
     float shade = mix(1.0, 0.4 + 0.6 * diffuse, u_lit);

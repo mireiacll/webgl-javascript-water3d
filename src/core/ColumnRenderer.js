@@ -3,12 +3,10 @@ import { ColumnShader } from './ColumnShader.js';
 const LAYER_TERRAIN = 0;
 const LAYER_WATER = 1;
 
-const BOX_VERTEX_COUNT = 30;   // 5 faces (no bottom - nobody sees it) x 2 triangles x 3 vertices
-const EDGE_VERTEX_COUNT = 16;  // 8 edges x 2 vertices
+const BOX_VERTEX_COUNT = 30;
+const EDGE_VERTEX_COUNT = 16;
 
-// Draws the whole columnCount x columnCount grid as instanced boxes: one instance
-// per column, height and position come from the textures in the vertex shader,
-// so nothing gets uploaded per frame.
+// Instanced column geometry used for water and the optional block terrain view.
 export class ColumnRenderer {
     constructor(gl, columnCount) {
         this.gl = gl;
@@ -17,21 +15,21 @@ export class ColumnRenderer {
         this.viewProj = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
         this.shader = new ColumnShader(gl);
-        this.imageryTexture = null; // optional satellite imagery draped over TERRAIN faces only - see setImageryTexture()
+        this.imageryTexture = null;
 
         this._buildBox();
         this._buildEdges();
     }
 
-    // unit box, each axis 0..1 - the vertex shader stretches it to the column
     _buildBox() {
         const gl = this.gl;
+        // Five box faces; the hidden bottom face is omitted.
         const faces = [
-            { n: [0, 0, 1],  c: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },   // top
-            { n: [1, 0, 0],  c: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },   // +x
-            { n: [-1, 0, 0], c: [[0, 1, 0], [0, 0, 0], [0, 0, 1], [0, 1, 1]] },   // -x
-            { n: [0, 1, 0],  c: [[1, 1, 0], [0, 1, 0], [0, 1, 1], [1, 1, 1]] },   // +y
-            { n: [0, -1, 0], c: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },   // -y
+            { n: [0, 0, 1],  c: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
+            { n: [1, 0, 0],  c: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },
+            { n: [-1, 0, 0], c: [[0, 1, 0], [0, 0, 0], [0, 0, 1], [0, 1, 1]] },
+            { n: [0, 1, 0],  c: [[1, 1, 0], [0, 1, 0], [0, 1, 1], [1, 1, 1]] },
+            { n: [0, -1, 0], c: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
         ];
         const data = [];
         for (const { n, c } of faces) {
@@ -56,9 +54,9 @@ export class ColumnRenderer {
         gl.bindVertexArray(null);
     }
 
-    // the water box's top rectangle + 4 vertical edges, drawn as GL_LINES for the outline
     _buildEdges() {
         const gl = this.gl;
+        // Four top edges and four vertical edges per column.
         const top = [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
         const bottom = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]];
         const data = [];
@@ -76,7 +74,6 @@ export class ColumnRenderer {
 
         gl.enableVertexAttribArray(this.shader.cornerLoc);
         gl.vertexAttribPointer(this.shader.cornerLoc, 3, gl.FLOAT, false, 0, 0);
-        // no normal for the lines - they're drawn unlit
         gl.disableVertexAttribArray(this.shader.normalLoc);
 
         gl.bindVertexArray(null);
@@ -84,14 +81,9 @@ export class ColumnRenderer {
 
     setGapFraction(fraction) { this.gapFraction = fraction; }
 
-    // Satellite imagery draped over the TERRAIN layer only (see _setUniforms), using
-    // the UV columnVertex.glsl derives from world xy - doesn't own the texture (main.js
-    // does, since the same texture is also handed to TerrainMeshRenderer), so this
-    // never deletes it, just stops using it.
     setImageryTexture(texture) { this.imageryTexture = texture; }
     clearImageryTexture() { this.imageryTexture = null; }
 
-    // column-major view * projection, straight from Camera.getViewProjMatrix()
     setCamera(viewProj) { this.viewProj = viewProj; }
 
     renderTerrain(terrainTex, worldWidth, r, g, b) {
@@ -114,7 +106,7 @@ export class ColumnRenderer {
         const gl = this.gl;
         this._setUniforms(layer, terrainTex, waterTex, worldWidth, r, g, b, 1.0);
 
-        // push the filled faces back a hair so the outline lines sitting on their edges win the depth test
+        // Offset fills slightly so coplanar outline lines pass the depth test.
         gl.enable(gl.POLYGON_OFFSET_FILL);
         gl.polygonOffset(-1, -1);
         gl.bindVertexArray(this.boxVao);
@@ -137,8 +129,6 @@ export class ColumnRenderer {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, this.imageryTexture);
         gl.uniform1i(sh.uTextureLoc, 2);
-        // imagery is terrain-only - water always needs its own distinct color so the
-        // drop preview/outline stays visible against the ground, satellite photo or not
         gl.uniform1f(sh.uUseTextureLoc, (layer === LAYER_TERRAIN && this.imageryTexture) ? 1.0 : 0.0);
 
         gl.uniformMatrix4fv(sh.uViewProjLoc, false, this.viewProj);

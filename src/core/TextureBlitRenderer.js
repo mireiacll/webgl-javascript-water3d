@@ -1,6 +1,6 @@
 import { TextureBlitShader } from './TextureBlitShader.js';
 
-// Draws a texture full-screen using its own dedicated shader.
+// Copy a seed texture into the current water framebuffer.
 export class TextureBlitRenderer {
     constructor(gl) {
         this.gl = gl;
@@ -10,8 +10,6 @@ export class TextureBlitRenderer {
 
     _buildQuad() {
         const gl = this.gl;
-        // interleaved: position(3) + texCoord(2) = 5 floats per vertex,
-        // a full-screen quad made of 2 triangles (6 vertices, no index buffer needed)
         const data = new Float32Array([
             -1, -1, 0,  0, 0,
              1, -1, 0,  1, 0,

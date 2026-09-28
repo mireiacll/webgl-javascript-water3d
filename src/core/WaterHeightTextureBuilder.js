@@ -1,12 +1,9 @@
-// Builds the RG32F seed texture WaterFBO expects:
-// R = initial water DEPTH (height above the terrain)
-// G = 0 velocity.
-// The dropped block is a rectangle of columns [dropStartCol, dropEndCol) x [dropStartRow, dropEndRow).
+// Creates an RG32F water state with the initial drop in the specified column range.
 export function buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropAmount) {
-    const buffer = new Float32Array(columnCount * columnCount * 2); // zeros = dry and at rest
+    const buffer = new Float32Array(columnCount * columnCount * 2);
     for (let row = dropStartRow; row < dropEndRow; row++) {
         for (let col = dropStartCol; col < dropEndCol; col++) {
-            buffer[(row * columnCount + col) * 2] = dropAmount; // R: water depth
+            buffer[(row * columnCount + col) * 2] = dropAmount;
         }
     }
 

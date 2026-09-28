@@ -2,6 +2,7 @@ import { buildProgram } from './glUtils.js';
 import columnVertexSrc from '../shaders/columnVertex.glsl?raw';
 import columnFragmentSrc from '../shaders/columnFragment.glsl?raw';
 
+// Shader interface for the instanced column renderer.
 export class ColumnShader {
     constructor(gl) {
         this.gl = gl;
@@ -20,8 +21,6 @@ export class ColumnShader {
         this.uTextureLoc = gl.getUniformLocation(this.program, 'u_texture');
         this.uUseTextureLoc = gl.getUniformLocation(this.program, 'u_useTexture');
 
-        // gl.uniform*(null/undefined, ...) is silently ignored, so a stale name here fails without any error.
-        // shout instead
         for (const [key, loc] of Object.entries(this)) {
             if (key.endsWith('Loc') && (loc === null || loc === undefined || loc === -1)) {
                 console.error(`ColumnShader: "${key}" not found in the shader - old file or renamed uniform?`);

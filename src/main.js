@@ -14,29 +14,17 @@ import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrain
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
 import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
 
-const DEFAULT_COLUMN_COUNT = 100;           // columns per SIDE - the tank is columnCount x columnCount
-const DEFAULT_WORLD_WIDTH = 200.0;          // side of the square tank in meters - column width is derived as worldWidth / columnCount
-const DEFAULT_DAMPING = 0.88;               // per-frame flux bleed, 1.0 = none
-const DEFAULT_DT = 0.02;                    // fixed sim step per frame - this IS the simulation speed control
+const DEFAULT_COLUMN_COUNT = 100;
+const DEFAULT_WORLD_WIDTH = 200.0;
+const DEFAULT_DAMPING = 0.88;
+const DEFAULT_DT = 0.02;
 const CFL_NUMBER = 0.5;
 const GRAVITY = 9.8;
-const DEFAULT_TERRAIN_HEIGHT_SCALE = 10.0;  // height of the tallest terrain peak
+const DEFAULT_TERRAIN_HEIGHT_SCALE = 10.0;
 const DEFAULT_TERRAIN_SEED = 1;
-const DEFAULT_DROP_WIDTH = 20.0;            // side of the dropped square water block, in meters
-// 2 m of water over the default 20 x 20 m block. (This used to be 6000 m^3 = 15 m deep
-// over that footprint, which is a wall of water, not a drop.)
+const DEFAULT_DROP_WIDTH = 20.0;
 const DEFAULT_DROP_VOLUME_M3 = 800;
-// The drop volume slider's max depends ONLY on the tank width, not on the drop's own size:
-// max volume = MAX_DROP_DEPTH_FRACTION * activeWorldWidth^3, i.e. the volume that gives a
-// depth of 5% of the width if the drop covered the whole tank (10 m at 200 m, 100 m at 2 km,
-// 1000 m at 20 km). A smaller drop just gets deeper for the same volume, like real water would.
 const MAX_DROP_DEPTH_FRACTION = 0.05;
-// Esri World Imagery - public satellite/aerial tiles, no API key needed, same
-// slippy z/x/y scheme as everything else here (the {y}/{x} order in the URL itself
-// doesn't matter - MireiaTileMosaic just replaces each placeholder wherever it
-// appears). Esri's terms require attribution when this is shown (see the label
-// wired to attributionEl below) and only cover live display, not bulk caching -
-// fine for fetch-on-demand like this, not for a scraper.
 const SATELLITE_IMAGERY_URL_TEMPLATE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
@@ -44,7 +32,7 @@ const TERRAIN_COLOR = [0.45, 0.35, 0.25];
 
 const SimState = { IDLE: 'IDLE', RUNNING: 'RUNNING', STOPPED: 'STOPPED' };
 
-// ---- canvas + GL context ----
+// Set up WebGL and the render passes shared by the simulation.
 const canvas = document.getElementById('glCanvas');
 const gl = canvas.getContext('webgl2');
 if (!gl) {
@@ -53,11 +41,9 @@ if (!gl) {
 if (!gl.getExtension('EXT_color_buffer_float')) {
     throw new Error('EXT_color_buffer_float is required (float render targets) and is not supported here');
 }
-// the sim passes render into FBOs with no depth buffer, so the depth test is a no-op for them -
-// it only matters for the final column draw
 gl.enable(gl.DEPTH_TEST);
-gl.depthFunc(gl.GEQUAL);   // near now stores the LARGER value, so "closer" wins with >=
-gl.clearDepth(0.0);        // far/empty is now 0, not 1
+gl.depthFunc(gl.GEQUAL);
+gl.clearDepth(0.0);
 
 function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -71,53 +57,43 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// ---- renderers that don't depend on column count ----
-const textureBlit = new TextureBlitRenderer(gl); // used only to blit the seed texture into WaterFBO
+const textureBlit = new TextureBlitRenderer(gl);
 const fluxUpdateRenderer = new FluxUpdateRenderer(gl);
 const heightUpdateRenderer = new HeightUpdateRenderer(gl);
-const terrainMeshRenderer = new TerrainMeshRenderer(gl); // draws the terrain as a real mesh - ColumnRenderer now only draws water
+const terrainMeshRenderer = new TerrainMeshRenderer(gl);
 
-// ---- editable run parameters ----
+// Simulation and terrain settings controlled by the panel.
 const params = {
     columnCount: DEFAULT_COLUMN_COUNT,
     worldWidth: DEFAULT_WORLD_WIDTH,
     damping: DEFAULT_DAMPING,
     dt: DEFAULT_DT,
     terrainHeightScale: DEFAULT_TERRAIN_HEIGHT_SCALE,
-    dropPositionX: DEFAULT_WORLD_WIDTH / 2,  // meters, where the water block is centered
+    dropPositionX: DEFAULT_WORLD_WIDTH / 2,
     dropPositionY: DEFAULT_WORLD_WIDTH / 2,
-    dropWidth: DEFAULT_DROP_WIDTH,           // meters, side of the square block
-    dropVolumeM3: DEFAULT_DROP_VOLUME_M3,    // total water in the block - depth is derived from this + the block's footprint
+    dropWidth: DEFAULT_DROP_WIDTH,
+    dropVolumeM3: DEFAULT_DROP_VOLUME_M3,
     showOutline: true,
-    terrainAsMesh: true,                     // true = TerrainMeshRenderer (smooth), false = ColumnRenderer's old instanced boxes
-    terrainSource: 'procedural',             // 'procedural' or 'real' - see getCurrentHeightSampler()
-    centerLat: 45.8326,                      // default: Mont Blanc area - dramatic relief, easy to see it worked
+    terrainAsMesh: true,
+    terrainSource: 'procedural',
+    centerLat: 45.8326,
     centerLon: 6.8652,
-    fetchImagery: false,                     // if checked, "Pull from real life" also drapes satellite imagery over the terrain
-    // real-terrain fetches use worldWidth itself as the real-world patch size (see
-    // loadRealTerrainBtn below) - the tank's physical size and the area fetched from
-    // the map are the same number, so there's nothing left to keep in sync separately.
+    fetchImagery: false,
 };
 
-// populated once MireiaElevationTiles.build() succeeds - heightfield is normalized so
-// its own minimum sits at 0 (real elevation is an absolute altitude, e.g. ~700-4800m
-// here, which means nothing to the sim; only the RELIEF - the shape - matters)
 const realTerrain = {
     heightfield: null,
     gridWidth: 0,
     gridHeight: 0,
-    reliefMeters: 0,   // max - min of the fetched patch, used for camera far-plane sizing
-    minElevation: 0,   // the raw altitude that was subtracted off, kept only for the status display
-    hadNoData: false,  // true if some cells were void and got filled in from neighbors
-    hadOcean: false,   // true if some cells were real bathymetry, clamped to sea level (0)
+    reliefMeters: 0,
+    minElevation: 0,
+    hadNoData: false,
+    hadOcean: false,
     loading: false,
     error: null,
 };
 
-// Both the sim's terrain texture and the visual mesh read through this so they can
-// never disagree about the ground's shape, whichever source is active. Takes width
-// explicitly (rather than reading params.worldWidth) so it always samples at the width
-// that's actually being generated, even if the World width slider has moved since.
+// Both the rendered mesh and simulation terrain use this sampler.
 function getCurrentHeightSampler(worldWidth) {
     if (params.terrainSource === 'real' && realTerrain.heightfield) {
         return heightfieldSampler(realTerrain.heightfield, realTerrain.gridWidth, realTerrain.gridHeight, worldWidth, worldWidth);
@@ -125,12 +101,7 @@ function getCurrentHeightSampler(worldWidth) {
     return proceduralHeightSampler(worldWidth, params.terrainHeightScale, terrainSeed);
 }
 
-// Approximates a square bounding box in lon/lat around a center point, sized so its
-// real-world extent is roughly widthMeters x widthMeters. This is a flat-earth
-// approximation (111.32 km/degree of latitude, longitude compressed by cos(latitude))
-// - fine for a tank a few hundred meters across, but it drifts at high latitudes or
-// large widths. MireiaGlobe.js's UTM reprojection is the rigorous version of this, if
-// that precision is ever needed here.
+// Converts a square meter extent to an approximate longitude/latitude box.
 function computeBboxFromCenter(centerLon, centerLat, widthMeters) {
     const METERS_PER_DEGREE_LAT = 111320;
     const dLat = (widthMeters / 2) / METERS_PER_DEGREE_LAT;
@@ -140,20 +111,9 @@ function computeBboxFromCenter(centerLon, centerLat, widthMeters) {
     return { getMinX: () => minX, getMaxX: () => maxX, getMinY: () => minY, getMaxY: () => maxY };
 }
 
-// -32768 (the standard 16-bit no-data sentinel) isn't the only garbage value coming
-// back - a later load showed -16109 with no -32768 in sight, so the source (or a bug
-// in decoding it) is producing different bogus numbers for missing/void cells on
-// different requests, not one consistent flag value. Chasing each one individually is a
-// losing game, so this checks PLAUSIBILITY instead - but the bounds only need to catch
-// numbers that are physically impossible, not just "unusual": real bathymetry near a
-// coastline is legitimately negative (down to ~-11000m at the Mariana Trench), and
-// clamping that away as "no data" was itself the bug - it flood-filled genuine deep-
-// water cells from whatever shallow/coastal cell happened to be nearby, producing a
-// flat plateau with a fake cliff at the boundary. So: only flood-fill values outside a
-// generous physically-impossible range; genuine negative (ocean) values that survive
-// this filter get clamped to sea level separately below, not treated as missing.
-const MIN_PLAUSIBLE_METERS = -12000; // below the Mariana Trench (~-11034m) - only sentinel garbage lives past this
-const MAX_PLAUSIBLE_METERS = 9500;   // above Everest (~8849m) - only sentinel garbage lives past this
+// Keep real bathymetry; only fill values outside plausible Earth elevations.
+const MIN_PLAUSIBLE_METERS = -12000;
+const MAX_PLAUSIBLE_METERS = 9500;
 function fillNoDataInPlace(heightfield, gridWidth, gridHeight) {
     const isNoData = (v) => v < MIN_PLAUSIBLE_METERS || v > MAX_PLAUSIBLE_METERS;
     const total = heightfield.length;
@@ -169,7 +129,7 @@ function fillNoDataInPlace(heightfield, gridWidth, gridHeight) {
             validCount++;
         }
     }
-    if (validCount === total) return false; // nothing to fill
+    if (validCount === total) return false;
     if (validCount === 0) {
         throw new Error('fetched elevation is entirely no-data - try a different location or a smaller width');
     }
@@ -186,10 +146,6 @@ function fillNoDataInPlace(heightfield, gridWidth, gridHeight) {
     return true;
 }
 
-// Real bathymetry (post no-data fill, so this only sees genuine data, not sentinel
-// garbage) is still negative - the tank doesn't model actual ocean depth, so any
-// underwater cell just becomes flat sea level. Returns true if anything was clamped,
-// so the status display can tell the person their patch included water.
 function clampSeaLevelInPlace(heightfield) {
     let clamped = false;
     for (let i = 0; i < heightfield.length; i++) {
@@ -201,10 +157,6 @@ function clampSeaLevelInPlace(heightfield) {
     return clamped;
 }
 
-// Uploads a fetched imagery mosaic canvas (from MireiaTileMosaic) as a regular 2D
-// texture. Mipmapped + linear-filtered since the mesh/columns can be viewed from any
-// distance, and clamped rather than repeated since it's a one-off satellite photo,
-// not a tiling pattern.
 function createImageTexture(gl, canvas) {
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -217,35 +169,21 @@ function createImageTexture(gl, canvas) {
     return texture;
 }
 
-// width of the last GENERATED area - decoupled from params.worldWidth (the live slider)
-// until "Random" or "Pull from real life" applies it; see frameCamera below
 let activeWorldWidth = params.worldWidth;
 let terrainSeed = DEFAULT_TERRAIN_SEED;
 
-// ---- camera ----
+// Camera picking and clipping follow the active terrain bounds.
 const camera = new Camera();
 const cameraController = new CameraController(canvas, camera);
 cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
 cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3));
 
-// Height of the terrain's own vertical range for whichever source is active - shared by
-// camera framing, the pan/orbit/zoom pick plane, and far-clip sizing so none of them can
-// drift out of sync with what's actually on screen (that mismatch is what buried the
-// camera when real terrain's relief wasn't accounted for anywhere but the far plane).
 function currentSceneHeight() {
     return (params.terrainSource === 'real' && realTerrain.heightfield)
         ? realTerrain.reliefMeters
         : params.terrainHeightScale;
 }
 
-// Frames the camera on the tank using activeWorldWidth and the current scene height.
-// Reused (not just called once at startup) because activeWorldWidth and the terrain's
-// height range can both jump a lot in one click - loading real terrain can make the tank
-// 10x+ wider and its relief far taller than the flat procedural default. Without
-// re-framing after that jump, the camera stays where it was sized for the OLD tank and
-// ends up buried inside the new terrain or pressed right up against it - which reads as
-// "everything disappeared" (near-plane clipping/backface culling eating the whole
-// scene), not as a rendering bug.
 function frameCamera() {
     const sceneHeight = currentSceneHeight();
     camera.lookAt(
@@ -255,7 +193,7 @@ function frameCamera() {
 }
 frameCamera();
 
-// builds the column-count-sized resources
+// Create buffers for the grid resolution and terrain currently in use.
 function buildSimResources(columnCount, worldWidth) {
     return {
         waterPPB: new WaterPingPongBuffer(gl, columnCount),
@@ -265,12 +203,7 @@ function buildSimResources(columnCount, worldWidth) {
     };
 }
 
-// Rebuilds using activeWorldWidth - the width of the LAST generated area, not
-// params.worldWidth, which is just whatever the (possibly un-applied) slider shows.
-// Called by: a columnCount change (grid resolution only, width/terrain unchanged) AND
-// the two generate actions (Random / Pull from real life), which update
-// activeWorldWidth themselves before calling this - so terrain texture and visual mesh
-// are always rebuilt together and never drift out of sync with each other.
+// Rebuild the simulation and visual mesh together after terrain or grid changes.
 function rebuildTerrainAndSim() {
     sim.columnRenderer.dispose();
     sim.waterPPB.dispose();
@@ -278,16 +211,13 @@ function rebuildTerrainAndSim() {
     gl.deleteTexture(sim.terrainTexture);
     sim = buildSimResources(params.columnCount, activeWorldWidth);
     terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth);
-    cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth)); // so altitude clamping (see CameraController._clampAltitude) tracks whatever terrain is now active
-    cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3)); // ground picks (pan/orbit/zoom targeting) need to reach across the actual tank, not just the small default
+    cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
+    cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3));
     resourceColumnCount = params.columnCount;
-    applyImageryTexture(); // buildSimResources() just made a brand new ColumnRenderer - it doesn't know about imageryTexture yet
+    applyImageryTexture();
 }
 
-// current satellite imagery, if any was fetched via the "Pull from real life" checkbox -
-// owned here (not by either renderer) because it's shared between TerrainMeshRenderer
-// and ColumnRenderer, and because ColumnRenderer gets recreated from scratch on every
-// rebuildTerrainAndSim() call, so its texture reference would otherwise be lost.
+// One imagery texture is shared by both terrain renderers.
 let imageryTexture = null;
 function applyImageryTexture() {
     if (imageryTexture) {
@@ -299,15 +229,13 @@ function applyImageryTexture() {
     }
 }
 
-// (re)seeds the water sim for a fresh run: water depth is 0 everywhere except
-// the dropped block (columns [dropStartCol, dropEndCol) x rows [dropStartRow, dropEndRow)),
-// which starts uniformly at dropDepth
+// Seed the drop and clear flux before a run or while previewing in IDLE.
 function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth) {
     const seedTexture = buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     waterPPB.current().bind();
     textureBlit.render(seedTexture);
     waterPPB.current().unbind();
-    gl.deleteTexture(seedTexture); // only needed to seed the buffer above - free it or every reset leaks
+    gl.deleteTexture(seedTexture);
 
     fluxPPB.current().bind();
     gl.clearColor(0, 0, 0, 0);
@@ -320,7 +248,7 @@ terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), 
 let resourceColumnCount = params.columnCount;
 let state = SimState.IDLE;
 
-// ---- DOM control panel (replaces ImGui) ----
+// Bind the control panel to the simulation parameters.
 const el = (id) => document.getElementById(id);
 const stateLabel = el('stateLabel');
 const startBtn = el('startBtn');
@@ -358,10 +286,7 @@ bindSlider('dropPositionX', 'dropPositionX', (v) => v.toFixed(1));
 bindSlider('dropPositionY', 'dropPositionY', (v) => v.toFixed(1));
 bindSlider('dropWidth', 'dropWidth', (v) => v.toFixed(1));
 
-// Volume's max is MAX_DROP_DEPTH_FRACTION * activeWorldWidth^3 (see above), so the slider's raw
-// position is a fixed 0..DROP_VOLUME_SLIDER_STEPS remapped through a cubic curve:
-// t^3 grows slowly near 0, which keeps fine control over small volumes (shallow drops,
-// where most of the useful range is) and saves the big numbers for the end of the travel.
+// A cubic mapping gives the volume slider more precision near zero.
 const DROP_VOLUME_SLIDER_STEPS = 1000;
 const DROP_VOLUME_CURVE_EXPONENT = 3;
 function currentDropVolumeMax() {
@@ -388,20 +313,12 @@ dropVolumeInput.addEventListener('input', () => {
     dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
 });
 
-// The max depends on the active tank width, so when that changes the volume is kept
-// as-is (it's a physical quantity) and only clamped if the new max is below it. The
-// handle is re-derived from the value.
 function refreshDropVolumeSlider() {
     params.dropVolumeM3 = Math.min(params.dropVolumeM3, currentDropVolumeMax());
     dropVolumeInput.value = String(dropVolumeValueToRaw(params.dropVolumeM3));
     dropVolumeValueEl.textContent = params.dropVolumeM3.toFixed(0);
 }
 
-// The drop sliders' ranges track the ACTIVE (generated) width, not the staged World
-// width slider - dropping only ever makes sense within the area that's actually been
-// generated, and a range that moved live with the staged slider would be just as
-// misleading as the terrain itself moving live used to be. Called once now, then again
-// by the two generate actions whenever activeWorldWidth changes.
 function syncDropRangesToActiveWidth() {
     el('dropPositionX').max = String(activeWorldWidth);
     el('dropPositionY').max = String(activeWorldWidth);
@@ -419,7 +336,6 @@ el('terrainAsMesh').addEventListener('change', (e) => { params.terrainAsMesh = e
 el('fetchImagery').checked = params.fetchImagery;
 el('fetchImagery').addEventListener('change', (e) => { params.fetchImagery = e.target.checked; });
 
-// ---- real terrain (elevation tiles) ----
 const loadRealTerrainBtn = el('loadRealTerrainBtn');
 const realTerrainStatus = el('realTerrainStatus');
 
@@ -446,10 +362,7 @@ function updateRealTerrainStatus() {
 }
 updateRealTerrainStatus();
 
-// "Pull from real life" - one of the two generate actions (the other is "Random").
-// Fetches at whatever width is currently staged on the World width slider, and on
-// success that staged width becomes the new activeWorldWidth - nothing about the
-// tank/camera/drop ranges changes until this resolves and applies together.
+// Load elevation and optional imagery, then apply them as one terrain update.
 loadRealTerrainBtn.addEventListener('click', async () => {
     if (state !== SimState.IDLE || realTerrain.loading) return;
 
@@ -480,38 +393,28 @@ loadRealTerrainBtn.addEventListener('click', async () => {
         realTerrain.gridHeight = result.gridHeight;
         realTerrain.reliefMeters = max - min;
         realTerrain.minElevation = min;
-        realTerrain.hadNoData = wasFilled; // some cells were void and got filled from neighbors - see updateRealTerrainStatus
-        realTerrain.hadOcean = hadOcean;   // some cells were real bathymetry, clamped to sea level - see updateRealTerrainStatus
+        realTerrain.hadNoData = wasFilled;
+        realTerrain.hadOcean = hadOcean;
 
-        // imagery doesn't need the coveredBbox to match the elevation fetch's exactly -
-        // it's draped 0..1 across the tank the same simplified way heightfieldSampler
-        // already treats the heightfield, ignoring the small quantization difference
-        // between the two fetches' actual tile-boundary extents.
         if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
         if (imagery) { imageryTexture = createImageTexture(gl, imagery.canvas); }
 
         params.terrainSource = 'real';
         activeWorldWidth = params.worldWidth;
         rebuildTerrainAndSim();
-        // the tank can be a very different size/height range than whatever the camera
-        // was last framed for (especially the first load, still framed for the tiny
-        // default tank) - without this the camera can end up buried in the new terrain
         frameCamera();
         syncDropRangesToActiveWidth();
     } catch (err) {
         realTerrain.error = err.message;
-        // leave params.terrainSource/activeWorldWidth as whatever they were - a failed
-        // load shouldn't silently switch what's currently showing
     } finally {
         realTerrain.loading = false;
         updateRealTerrainStatus();
     }
 });
 
+// Start resets the drop; stop freezes it; delete returns to the live preview.
 startBtn.addEventListener('click', () => {
     if (state !== SimState.IDLE) return;
-    // resources are already sized correctly - the block is already seeded by the
-    // IDLE preview each frame, this just kicks off the flux/height passes on it
     const { dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = computeDropRegion();
     resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     state = SimState.RUNNING;
@@ -524,7 +427,7 @@ stopBtn.addEventListener('click', () => {
 
 deleteBtn.addEventListener('click', () => {
     if (state !== SimState.STOPPED) return;
-    state = SimState.IDLE; // back to IDLE so parameters + preview are live again
+    state = SimState.IDLE;
 });
 
 regenerateTerrainBtn.addEventListener('click', () => {
@@ -532,17 +435,13 @@ regenerateTerrainBtn.addEventListener('click', () => {
     params.terrainSource = 'procedural';
     terrainSeed++;
     activeWorldWidth = params.worldWidth;
-    // procedural terrain doesn't correspond to any real place, so any imagery from a
-    // previous real-terrain load no longer means anything - drop it rather than leaving
-    // a stale satellite photo draped over made-up hills
     if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
     rebuildTerrainAndSim();
     frameCamera();
     syncDropRangesToActiveWidth();
 });
 
-// the drop is a square block of columns centered on (dropPositionX, dropPositionY).
-// uses activeWorldWidth (the actually generated grid), not the staged worldWidth slider
+// Convert the requested drop into grid cells and depth for its actual footprint.
 function computeDropRegion() {
     const columnWidth = activeWorldWidth / params.columnCount;
     const half = params.dropWidth / 2;
@@ -553,7 +452,6 @@ function computeDropRegion() {
     const dropStartRow = clampIndex(Math.floor((params.dropPositionY - half) / columnWidth));
     const dropEndRow = Math.max(dropStartRow, clampIndex(Math.ceil((params.dropPositionY + half) / columnWidth)));
 
-    // depth needed so that (uniform depth) x (actual quantized footprint) = requested drop volume
     const dropSizeX = (dropEndCol - dropStartCol) * columnWidth;
     const dropSizeY = (dropEndRow - dropStartRow) * columnWidth;
     const dropFootprint = dropSizeX * dropSizeY;
@@ -562,6 +460,7 @@ function computeDropRegion() {
     return { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropSizeX, dropSizeY, dropDepth };
 }
 
+// Refresh state and numeric readouts after each frame.
 function updatePanel(dropInfo, substeps, subDt) {
     stateLabel.textContent = `State: ${state}`;
 
@@ -572,7 +471,6 @@ function updatePanel(dropInfo, substeps, subDt) {
     for (const id of lockedWhileRunningIds) {
         el(id).disabled = state !== SimState.IDLE;
     }
-    // ignored once real elevation data is active - grey it out so it's not misleading
     el('terrainHeightScale').disabled = el('terrainHeightScale').disabled || params.terrainSource === 'real';
 
     cflInfo.textContent = `CFL: ${substeps} substep${substeps === 1 ? '' : 's'} per frame (${subDt.toFixed(5)} s each)`;
@@ -582,18 +480,17 @@ function updatePanel(dropInfo, substeps, subDt) {
         `${dropInfo.dropSizeX.toFixed(1)} x ${dropInfo.dropSizeY.toFixed(1)} m)`;
 }
 
-// ---- render loop ----
+// Advance simulation state, render the scene, then schedule the next frame.
 function frame() {
     resizeCanvas();
 
-    // d is derived, not set directly
     const dropInfo = computeDropRegion();
     const { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = dropInfo;
-    const pipeArea = columnWidth * columnWidth;   // d*d
-    const pipeLength = columnWidth;                // d
-    const columnArea = columnWidth * columnWidth;   // d*d - same d, footprint area
+    const pipeArea = columnWidth * columnWidth;
+    const pipeLength = columnWidth;
+    const columnArea = columnWidth * columnWidth;
 
-    // Split a requested frame step whenever it exceeds the shallow-water CFL limit.
+    // Choose enough substeps to respect the shallow-water CFL limit.
     const maxWaterDepth = dropDepth;
     const waveSpeed = maxWaterDepth > 0 ? Math.sqrt(GRAVITY * maxWaterDepth) : 0;
     const cflDt = waveSpeed > 0 ? CFL_NUMBER * columnWidth / waveSpeed : params.dt;
@@ -601,21 +498,15 @@ function frame() {
     const subDt = params.dt / substeps;
     const substepDamping = Math.pow(params.damping, subDt);
 
+    // IDLE keeps the displayed drop synchronized with its controls.
     if (state === SimState.IDLE) {
-        // column count changes buffer SIZE (water/flux resolution) and needs a fresh
-        // terrain texture at that resolution too - this still happens live, since it's
-        // a grid-resolution change, not a "what area am I looking at" change. worldWidth
-        // and terrain source/shape only change via the "Random" / "Pull from real life"
-        // buttons now (see those handlers) - not by dragging sliders.
         if (params.columnCount !== resourceColumnCount) {
             rebuildTerrainAndSim();
         }
-        // reseeding every IDLE frame with the live slider values doubles as the
-        // "preview" - dragging position/width/volume shows the pending block directly,
-        // already at the depth it would actually be dropped at
         resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
     }
 
+    // Each step updates flux first, then applies it to water depth.
     if (state === SimState.RUNNING) {
         for (let step = 0; step < substeps; step++) {
             sim.fluxPPB.next().bind();
@@ -636,12 +527,7 @@ function frame() {
             sim.waterPPB.swap();
         }
     }
-    // when STOPPED: skip the two passes above, draw keeps showing the frozen state
-
-    // (pan/orbit/zoom's pick-plane height is now sampled from the real terrain directly
-    // by CameraController itself - see _pickPlaneZ - not set from here anymore)
-
-    // draw the terrain, then the water on top of it
+    // Draw terrain first, then water and its optional outline.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(0.05, 0.05, 0.08, 1.0);
@@ -657,8 +543,6 @@ function frame() {
     if (params.terrainAsMesh) {
         terrainMeshRenderer.render(viewProj, ...TERRAIN_COLOR);
     } else {
-        // old instanced-box path - still reads the same terrain texture the water sim
-        // itself uses, so switching the toggle never changes where the water actually sits
         sim.columnRenderer.renderTerrain(sim.terrainTexture, activeWorldWidth, ...TERRAIN_COLOR);
     }
     sim.columnRenderer.renderWater(sim.terrainTexture, waterTexture, activeWorldWidth, ...WATER_COLOR);

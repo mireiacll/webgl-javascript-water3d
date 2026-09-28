@@ -1,5 +1,6 @@
 import { MireiaNode } from './MireiaNode.js';
 
+// Scene entry point for collecting terrain vertices and triangle indices.
 export class MireiaScene{
     #rootNode;
 

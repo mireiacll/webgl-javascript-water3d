@@ -1,3 +1,4 @@
+// Groups primitives and assigns the vertex indices used by GPU buffers.
 export class MireiaMesh{
     #primitives;
     #vertices;

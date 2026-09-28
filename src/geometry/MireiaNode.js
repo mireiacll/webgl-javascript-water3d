@@ -1,5 +1,6 @@
 import { MireiaMat4 } from "../math/MireiaMat4";
 
+// A scene node groups meshes and propagates transforms through its children.
 export class MireiaNode{
     #meshes;
     #children;
@@ -55,10 +56,9 @@ export class MireiaNode{
     getLocalTransform() { return this.#tMat; }
     setLocalTransform(transform) { this.#tMat = transform; }
 
-    // in renderer I call object.getTransform().getMatrix() so I need same name and same function inside
-    getTransform(){ // get the preMultipliedtMat
+    getTransform(){
         const preMultipliedtMat = this.#preMultipliedtMat;
-        function getMatrix(){return preMultipliedtMat;} // to not compute again matrix but just give the precomputed one
+        function getMatrix(){return preMultipliedtMat;}
         return {getMatrix: getMatrix};
     }
 

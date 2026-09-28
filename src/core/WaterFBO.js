@@ -1,5 +1,4 @@
-// One column's water state per texel: R = height, G = velocity
-// The texture is columnCount x columnCount now - texel (col, row) is the column at that grid spot.
+// RG32F: water depth in R, velocity in G; one texel per column.
 export class WaterFBO {
     constructor(gl, columnCount) {
         this.gl = gl;

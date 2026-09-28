@@ -20,7 +20,7 @@ out vec2 v_texCoord; // derived from world xy below, not a separate attribute - 
 const float MIN_DRAW_DEPTH = 0.001;
 
 void main() {
-    // one instance per column, laid out row by row
+    // Map each instance id to the matching terrain and water texel.
     int n = int(u_columnCount + 0.5);
     ivec2 cell = ivec2(gl_InstanceID % n, gl_InstanceID / n);
 
