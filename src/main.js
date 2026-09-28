@@ -27,6 +27,9 @@ const DEFAULT_TERRAIN_SEED = 1;
 const DEFAULT_DROP_WIDTH = 20.0;
 const DEFAULT_DROP_VOLUME_M3 = 800;
 const SATELLITE_IMAGERY_URL_TEMPLATE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+// Water mass check (debug). Every readback stalls the GPU: 1 = every substep, 0 = off.
+const MASS_CHECK_EVERY_N_STEPS = 30;
+const MASS_TOLERANCE = 1e-4;   // allowed relative drift from the starting volume
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
 const TERRAIN_COLOR = [0.45, 0.35, 0.25];
@@ -176,6 +179,23 @@ function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCo
     fluxPPB.current().unbind();
 }
 
+// Total water volume (m^3) read back from the current water texture.
+function measureWaterVolume() {
+    const buffer = sim.waterPPB.current();
+    return buffer.readTotalDepth() * (activeWorldWidth / buffer.columnCount) ** 2;
+}
+
+let initialWaterVolume = 0;
+let stepCounter = 0;
+function checkWaterMass(label, alwaysLog = false) {
+    const volume = measureWaterVolume();
+    const drift = initialWaterVolume > 0 ? (volume - initialWaterVolume) / initialWaterVolume : 0;
+    const ok = Math.abs(drift) <= MASS_TOLERANCE; // false for NaN too
+    const msg = `[mass] ${label}: ${volume.toFixed(3)} m^3 (start ${initialWaterVolume.toFixed(3)}, drift ${(drift * 100).toExponential(2)}%)`;
+    if (!ok) console.warn(msg);
+    else if (alwaysLog) console.log(msg);
+}
+
 let sim = buildSimResources(params.columnCount, activeWorldWidth);
 terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth);
 let resourceColumnCount = params.columnCount;
@@ -247,12 +267,16 @@ function startSim() {
     if (state !== SimState.IDLE) return;
     const { dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = computeDropRegion();
     resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
+    initialWaterVolume = measureWaterVolume();
+    stepCounter = 0;
+    console.log(`[mass] start: measured ${initialWaterVolume.toFixed(3)} m^3, expected ${params.dropVolumeM3.toFixed(3)} m^3`);
     state = SimState.RUNNING;
 }
 
 function stopSim() {
     if (state !== SimState.RUNNING) return;
     state = SimState.STOPPED;
+    checkWaterMass('stop', true);
 }
 
 function deleteSim() {
@@ -337,6 +361,11 @@ function frame() {
             );
             sim.waterPPB.next().unbind();
             sim.waterPPB.swap();
+
+            stepCounter++;
+            if (MASS_CHECK_EVERY_N_STEPS > 0 && stepCounter % MASS_CHECK_EVERY_N_STEPS === 0) {
+                checkWaterMass(`step ${stepCounter}`);
+            }
         }
     }
     // Draw terrain first, then water and its optional outline.
