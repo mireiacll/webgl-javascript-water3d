@@ -89,6 +89,9 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     el('terrainAsMesh').checked = params.terrainAsMesh;
     el('terrainAsMesh').addEventListener('change', (e) => { params.terrainAsMesh = e.target.checked; });
 
+    el('waterAsMesh').checked = params.waterAsMesh;
+    el('waterAsMesh').addEventListener('change', (e) => { params.waterAsMesh = e.target.checked; });
+
     el('showImagery').checked = params.showImagery;
     el('showImagery').addEventListener('change', (e) => {
         params.showImagery = e.target.checked;

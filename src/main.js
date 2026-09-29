@@ -9,6 +9,7 @@ import { Camera } from './camera/Camera.js';
 import { CameraController } from './camera/CameraController.js';
 import { updateDynamicClipping } from './camera/dynamicClipping.js';
 import { TerrainMeshRenderer } from './core/TerrainMeshRenderer.js';
+import { WaterMeshRenderer } from './core/WaterMeshRenderer.js';
 import { buildTerrainHeightTextureFromSampler } from './core/TerrainHeightTextureBuilder.js';
 import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrainMesh.js';
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
@@ -65,6 +66,7 @@ const textureBlit = new TextureBlitRenderer(gl);
 const fluxUpdateRenderer = new FluxUpdateRenderer(gl);
 const heightUpdateRenderer = new HeightUpdateRenderer(gl);
 const terrainMeshRenderer = new TerrainMeshRenderer(gl);
+const waterMeshRenderer = new WaterMeshRenderer(gl);
 
 // Simulation and terrain settings controlled by the panel.
 const params = {
@@ -79,6 +81,7 @@ const params = {
     dropVolumeM3: DEFAULT_DROP_VOLUME_M3,
     showOutline: true,
     terrainAsMesh: true,
+    waterAsMesh: false,
     terrainSource: 'procedural',
     centerLat: 45.8326,
     centerLon: 6.8652,
@@ -381,9 +384,13 @@ function frame() {
     } else {
         sim.columnRenderer.renderTerrain(sim.terrainTexture, activeWorldWidth, ...TERRAIN_COLOR);
     }
-    sim.columnRenderer.renderWater(sim.terrainTexture, waterTexture, activeWorldWidth, ...WATER_COLOR);
-    if (params.showOutline) {
-        sim.columnRenderer.renderWaterOutline(sim.terrainTexture, waterTexture, activeWorldWidth, ...OUTLINE_COLOR);
+    if (params.waterAsMesh) {
+        waterMeshRenderer.render(viewProj, sim.terrainTexture, waterTexture, params.columnCount, activeWorldWidth, ...WATER_COLOR);
+    } else {
+        sim.columnRenderer.renderWater(sim.terrainTexture, waterTexture, activeWorldWidth, ...WATER_COLOR);
+        if (params.showOutline) {
+            sim.columnRenderer.renderWaterOutline(sim.terrainTexture, waterTexture, activeWorldWidth, ...OUTLINE_COLOR);
+        }
     }
 
     ui.update(dropInfo, substeps, subDt);

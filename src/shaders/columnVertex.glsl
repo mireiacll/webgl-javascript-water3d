@@ -18,7 +18,7 @@ out vec2 v_texCoord; // derived from world xy below, not a separate attribute - 
 
 // water shallower than this (meters) is still simulated but not drawn - hides the thin film that barely moves,
 // and avoids zero-height boxes z-fighting with the terrain top
-const float MIN_DRAW_DEPTH = 0.01;
+const float MIN_DRAW_DEPTH = 0.05;
 
 void main() {
     // Map each instance id to the matching terrain and water texel.
