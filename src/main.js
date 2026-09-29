@@ -156,6 +156,7 @@ function rebuildTerrainAndSim() {
     cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
     cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3));
     resourceColumnCount = params.columnCount;
+    idleSeedKey = null;
     applyImageryTexture();
 }
 
@@ -192,6 +193,8 @@ function measureWaterVolume() {
 }
 
 let initialWaterVolume = 0;
+// Last drop seeded in IDLE; null forces a re-seed (fresh buffers, or coming back from a run).
+let idleSeedKey = null;
 let stepCounter = 0;
 function checkWaterMass(label, alwaysLog = false) {
     const volume = measureWaterVolume();
@@ -286,6 +289,7 @@ function stopSim() {
 function deleteSim() {
     if (state !== SimState.STOPPED) return;
     state = SimState.IDLE;
+    idleSeedKey = null;
 }
 
 function regenerateTerrain() {
@@ -353,7 +357,12 @@ function frame() {
         if (params.columnCount !== resourceColumnCount) {
             rebuildTerrainAndSim();
         }
-        resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
+        // Only rebuild the seed texture when the drop actually changed.
+        const seedKey = `${params.columnCount}|${dropStartCol}|${dropEndCol}|${dropStartRow}|${dropEndRow}|${dropDepth}`;
+        if (seedKey !== idleSeedKey) {
+            resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
+            idleSeedKey = seedKey;
+        }
     }
 
     // Each step updates flux first, then applies it to water depth.
