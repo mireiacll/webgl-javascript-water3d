@@ -28,8 +28,6 @@ export class MireiaTileMosaic{
         canvas.height = rows * TILE_SIZE;
         const ctx = canvas.getContext('2d');
 
-        console.log(`[MireiaTileMosaic] fetching ${tiles.length} tile(s) at zoom ${zoom} (${cols}x${rows} grid)`);
-
         // Fetch in parallel, then place each image by its offset in the tile grid.
         await Promise.all(tiles.map(async ({ x, y, zoom }) => {
             const url = urlTemplate

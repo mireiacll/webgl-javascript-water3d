@@ -14,7 +14,7 @@ import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrain
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
 import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
 import { initUI } from './ui.js';
-import { computeBboxFromCenter, fillNoDataInPlace, clampSeaLevelInPlace, createImageTexture } from './geo/terrainUtils.js';
+import { computeBboxFromCenter, cropHeightfieldToBbox, cropCanvasToBbox, fillNoDataInPlace, clampSeaLevelInPlace, createImageTexture } from './geo/terrainUtils.js';
 
 const DEFAULT_COLUMN_COUNT = 100;
 const DEFAULT_WORLD_WIDTH = 200.0;
@@ -90,9 +90,6 @@ const realTerrain = {
     gridWidth: 0,
     gridHeight: 0,
     reliefMeters: 0,
-    minElevation: 0,
-    hadNoData: false,
-    hadOcean: false,
     loading: false,
     error: null,
 };
@@ -222,13 +219,14 @@ async function loadRealTerrain() {
 
     try {
         const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, params.worldWidth);
-        const [result, imagery] = await Promise.all([
+        const [raw, imagery] = await Promise.all([
             MireiaElevationTiles.build(bbox),
             MireiaTileMosaic.build(bbox, { urlTemplate: SATELLITE_IMAGERY_URL_TEMPLATE }),
         ]);
 
-        const wasFilled = fillNoDataInPlace(result.heightfield, result.gridWidth, result.gridHeight);
-        const hadOcean = clampSeaLevelInPlace(result.heightfield);
+        const result = cropHeightfieldToBbox(raw, bbox);
+        fillNoDataInPlace(result.heightfield, result.gridWidth, result.gridHeight);
+        clampSeaLevelInPlace(result.heightfield);
 
         let min = Infinity, max = -Infinity;
         for (const h of result.heightfield) {
@@ -242,12 +240,9 @@ async function loadRealTerrain() {
         realTerrain.gridWidth = result.gridWidth;
         realTerrain.gridHeight = result.gridHeight;
         realTerrain.reliefMeters = max - min;
-        realTerrain.minElevation = min;
-        realTerrain.hadNoData = wasFilled;
-        realTerrain.hadOcean = hadOcean;
 
         if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
-        imageryTexture = createImageTexture(gl, imagery.canvas);
+        imageryTexture = createImageTexture(gl, cropCanvasToBbox(imagery.canvas, imagery.zoom, bbox));
 
         params.terrainSource = 'real';
         activeWorldWidth = params.worldWidth;

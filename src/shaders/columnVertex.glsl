@@ -16,8 +16,9 @@ out vec2 v_texCoord; // derived from world xy below, not a separate attribute - 
                       // u = x/worldWidth, v = 1 - y/worldWidth convention MireiaTerrainMesh.js
                       // uses for the mesh, so the same imagery lines up on both renderers
 
-// water shallower than this isn't drawn at all - a zero-height box would sit exactly on the terrain top and z-fight with it
-const float MIN_DRAW_DEPTH = 0.001;
+// water shallower than this (meters) is still simulated but not drawn - hides the thin film that barely moves,
+// and avoids zero-height boxes z-fighting with the terrain top
+const float MIN_DRAW_DEPTH = 0.01;
 
 void main() {
     // Map each instance id to the matching terrain and water texel.

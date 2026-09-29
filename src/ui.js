@@ -106,12 +106,7 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
         } else if (realTerrain.error) {
             realTerrainStatus.textContent = `Failed to load: ${realTerrain.error}`;
         } else if (realTerrain.heightfield) {
-            realTerrainStatus.textContent = `Loaded - relief ${realTerrain.reliefMeters.toFixed(1)} m ` +
-                `(${realTerrain.minElevation.toFixed(0)} m to ${(realTerrain.minElevation + realTerrain.reliefMeters).toFixed(0)} m altitude), ` +
-                `${realTerrain.gridWidth}x${realTerrain.gridHeight} samples` +
-                (realTerrain.hadNoData ? ' (some cells had no data and were filled from neighbors)' : '') +
-                (realTerrain.hadOcean ? ' (patch includes ocean, clamped to sea level)' : '') +
-                (hasImagery() ? ' + satellite imagery' : '');
+            realTerrainStatus.textContent = hasImagery() ? 'Terrain loaded with satellite imagery' : 'Terrain loaded';
         } else {
             realTerrainStatus.textContent = 'Not loaded yet';
         }
