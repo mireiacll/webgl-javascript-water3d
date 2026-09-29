@@ -34,6 +34,9 @@ const MASS_TOLERANCE = 1e-4;   // allowed relative drift from the starting volum
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
 const TERRAIN_COLOR = [0.45, 0.35, 0.25];
+const WATER_COLOR_MODES = { none: 0, depth: 1, velocity: 2, flux: 3 };
+// Real flows stay well below critical speed, so the auto legend spans this fraction of it.
+const AUTO_RANGE_FRACTION = 0.5;
 
 const SimState = { IDLE: 'IDLE', RUNNING: 'RUNNING', STOPPED: 'STOPPED' };
 
@@ -82,6 +85,9 @@ const params = {
     showOutline: true,
     terrainAsMesh: true,
     waterAsMesh: false,
+    waterColorMode: 'none',   // none | depth | velocity | flux
+    waterRangeAuto: true,
+    waterRangeMax: 1,
     terrainSource: 'procedural',
     centerLat: 45.8326,
     centerLon: 6.8652,
@@ -314,6 +320,16 @@ function computeDropRegion() {
 }
 
 
+// Legend max used when auto range is on, from the drop depth (no GPU readback needed).
+function autoWaterRange(mode, dropDepth) {
+    if (dropDepth <= 0) return 1;
+    const critical = Math.sqrt(GRAVITY * dropDepth); // shallow-water wave speed
+    if (mode === 'depth') return dropDepth;
+    if (mode === 'velocity') return AUTO_RANGE_FRACTION * critical;   // m/s
+    if (mode === 'flux') return AUTO_RANGE_FRACTION * critical * dropDepth; // m^2/s
+    return 1;
+}
+
 // Advance simulation state, render the scene, then schedule the next frame.
 function frame() {
     resizeCanvas();
@@ -379,6 +395,13 @@ function frame() {
     sim.columnRenderer.setCamera(viewProj);
     sim.columnRenderer.setGapFraction(params.showOutline ? 0.1 : 0.0);
     const waterTexture = sim.waterPPB.current().getTexture();
+    const colorMode = WATER_COLOR_MODES[params.waterColorMode] ?? 0;
+    const waterRangeMax = Math.max(1e-6, params.waterRangeAuto ? autoWaterRange(params.waterColorMode, dropDepth) : params.waterRangeMax);
+    const fluxTexture = sim.fluxPPB.current().getTexture();
+    sim.columnRenderer.setFluxTexture(fluxTexture);
+    sim.columnRenderer.setWaterColoring(colorMode, waterRangeMax);
+    waterMeshRenderer.setFluxTexture(fluxTexture);
+    waterMeshRenderer.setWaterColoring(colorMode, waterRangeMax);
     if (params.terrainAsMesh) {
         terrainMeshRenderer.render(viewProj, ...TERRAIN_COLOR);
     } else {
@@ -393,7 +416,7 @@ function frame() {
         }
     }
 
-    ui.update(dropInfo, substeps, subDt);
+    ui.update(dropInfo, substeps, subDt, waterRangeMax);
 
     requestAnimationFrame(frame);
 }

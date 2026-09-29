@@ -1,4 +1,5 @@
 import { ColumnShader } from './ColumnShader.js';
+import { COLOR_RAMP_FLAT } from './colorRamp.js';
 
 const LAYER_TERRAIN = 0;
 const LAYER_WATER = 1;
@@ -16,6 +17,17 @@ export class ColumnRenderer {
 
         this.shader = new ColumnShader(gl);
         this.imageryTexture = null;
+
+        // Water coloring (depth / velocity / flux); looked up here so ColumnShader stays untouched.
+        const u = (name) => gl.getUniformLocation(this.shader.program, name);
+        this.uFluxLoc = u('u_flux');
+        this.uColorModeLoc = u('u_colorMode');
+        this.uRangeMaxLoc = u('u_rangeMax');
+        this.uUseRampLoc = u('u_useRamp');
+        this.uRampLoc = u('u_ramp');
+        this.fluxTexture = null;
+        this.colorMode = 0;   // 0 none, 1 depth, 2 velocity, 3 flux
+        this.rangeMax = 1;
 
         this._buildBox();
         this._buildEdges();
@@ -86,6 +98,9 @@ export class ColumnRenderer {
 
     setCamera(viewProj) { this.viewProj = viewProj; }
 
+    setFluxTexture(texture) { this.fluxTexture = texture; }
+    setWaterColoring(mode, rangeMax) { this.colorMode = mode; this.rangeMax = rangeMax; }
+
     renderTerrain(terrainTex, worldWidth, r, g, b) {
         this._drawFill(LAYER_TERRAIN, terrainTex, terrainTex, worldWidth, r, g, b);
     }
@@ -130,6 +145,15 @@ export class ColumnRenderer {
         gl.bindTexture(gl.TEXTURE_2D, this.imageryTexture);
         gl.uniform1i(sh.uTextureLoc, 2);
         gl.uniform1f(sh.uUseTextureLoc, (layer === LAYER_TERRAIN && this.imageryTexture) ? 1.0 : 0.0);
+
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, this.fluxTexture);
+        gl.uniform1i(this.uFluxLoc, 3);
+        gl.uniform1i(this.uColorModeLoc, this.colorMode);
+        gl.uniform1f(this.uRangeMaxLoc, this.rangeMax);
+        // Ramp only on water fills (lit = 1), never on terrain or the outline lines.
+        gl.uniform1f(this.uUseRampLoc, (layer === LAYER_WATER && lit > 0.5 && this.colorMode > 0) ? 1.0 : 0.0);
+        gl.uniform3fv(this.uRampLoc, COLOR_RAMP_FLAT);
 
         gl.uniformMatrix4fv(sh.uViewProjLoc, false, this.viewProj);
         gl.uniform1f(sh.uColumnCountLoc, this.columnCount);

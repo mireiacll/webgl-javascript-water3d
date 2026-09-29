@@ -1,4 +1,6 @@
 // Control panel: binds DOM inputs to the simulation's params and actions.
+import { COLOR_RAMP } from './core/colorRamp.js';
+
 const MAX_DROP_DEPTH_FRACTION = 0.05;
 const DROP_VOLUME_SLIDER_STEPS = 1000;
 const DROP_VOLUME_CURVE_EXPONENT = 3;
@@ -92,6 +94,37 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     el('waterAsMesh').checked = params.waterAsMesh;
     el('waterAsMesh').addEventListener('change', (e) => { params.waterAsMesh = e.target.checked; });
 
+    // Water coloring: what to color by, legend range, and the on-canvas legend.
+    const LEGEND_INFO = {
+        depth: { title: 'Water level', unit: 'm' },
+        velocity: { title: 'Velocity', unit: 'm/s' },
+        flux: { title: 'Flux (discharge per unit width)', unit: 'm\u00B2/s' },
+    };
+    const colorModeEl = el('waterColorMode');
+    const rangeAutoEl = el('waterRangeAuto');
+    const rangeMaxEl = el('waterRangeMax');
+    const legendEl = el('waterLegend');
+    const rgb = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
+    el('legendBar').style.background = `linear-gradient(to right, ${COLOR_RAMP.map(rgb).join(', ')})`;
+
+    colorModeEl.value = params.waterColorMode;
+    rangeAutoEl.checked = params.waterRangeAuto;
+    rangeMaxEl.value = params.waterRangeMax;
+    colorModeEl.addEventListener('change', (e) => {
+        params.waterColorMode = e.target.value;
+        // Units change with the quantity, so go back to the automatic range.
+        params.waterRangeAuto = true;
+        rangeAutoEl.checked = true;
+    });
+    rangeAutoEl.addEventListener('change', (e) => {
+        params.waterRangeAuto = e.target.checked;
+        if (!e.target.checked) params.waterRangeMax = parseFloat(rangeMaxEl.value) || 1;
+    });
+    rangeMaxEl.addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        if (v > 0) params.waterRangeMax = v;
+    });
+
     el('showImagery').checked = params.showImagery;
     el('showImagery').addEventListener('change', (e) => {
         params.showImagery = e.target.checked;
@@ -123,7 +156,7 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     regenerateTerrainBtn.addEventListener('click', actions.regenerateTerrain);
 
     // Refresh state and numeric readouts after each frame.
-    function update(dropInfo, substeps, subDt) {
+    function update(dropInfo, substeps, subDt, waterRangeMax) {
         const state = getState();
         stateLabel.textContent = `State: ${state}`;
 
@@ -141,6 +174,17 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
         dropDepthInfo.textContent = `-> depth per column = ${dropInfo.dropDepth.toFixed(3)} m ` +
             `(spanning ${dropInfo.dropEndCol - dropInfo.dropStartCol} x ${dropInfo.dropEndRow - dropInfo.dropStartRow} columns, ` +
             `${dropInfo.dropSizeX.toFixed(1)} x ${dropInfo.dropSizeY.toFixed(1)} m)`;
+
+        // Water legend: hidden when nothing is colored; range box mirrors the auto value.
+        const info = LEGEND_INFO[params.waterColorMode];
+        legendEl.hidden = !info;
+        rangeMaxEl.disabled = params.waterRangeAuto;
+        if (info) {
+            el('legendTitle').textContent = `${info.title} (${info.unit})`;
+            el('legendMin').textContent = '0';
+            el('legendMax').textContent = waterRangeMax.toPrecision(3);
+            if (params.waterRangeAuto) rangeMaxEl.value = waterRangeMax.toPrecision(3);
+        }
     }
 
     return { update, updateRealTerrainStatus, syncDropRanges };

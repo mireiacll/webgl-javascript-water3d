@@ -128,6 +128,37 @@
     </div>
 
     <hr />
+    <p class="section">Water coloring (live, works while running)</p>
+
+    <div class="field">
+      <label for="waterColorMode">Color water by</label>
+      <select id="waterColorMode">
+        <option value="none">Nothing (plain water color)</option>
+        <option value="depth">Water level (depth)</option>
+        <option value="velocity">Velocity</option>
+        <option value="flux">Flux</option>
+      </select>
+    </div>
+
+    <div class="field checkbox-field">
+      <label for="waterRangeAuto">Auto legend range</label>
+      <input type="checkbox" id="waterRangeAuto" checked />
+    </div>
+
+    <div class="field">
+      <label for="waterRangeMax">Legend max</label>
+      <input type="number" id="waterRangeMax" step="any" min="0" />
+    </div>
+
+    <hr />
+  </div>
+
+  <div id="waterLegend" hidden style="position:fixed;left:12px;bottom:12px;min-width:200px;padding:8px 10px;background:rgba(10,10,20,0.75);color:#fff;font:12px sans-serif;border-radius:6px;pointer-events:none;">
+    <div id="legendTitle" style="margin-bottom:4px;"></div>
+    <div id="legendBar" style="height:12px;border-radius:2px;"></div>
+    <div style="display:flex;justify-content:space-between;margin-top:2px;">
+      <span id="legendMin">0</span><span id="legendMax"></span>
+    </div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
