@@ -29,7 +29,7 @@ const DEFAULT_DROP_WIDTH = 20.0;
 const DEFAULT_DROP_VOLUME_M3 = 800;
 const SATELLITE_IMAGERY_URL_TEMPLATE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 // Water mass check (debug). Every readback stalls the GPU: 1 = every substep, 0 = off.
-const MASS_CHECK_EVERY_N_STEPS = 30;
+const MASS_CHECK_EVERY_N_STEPS = 0;
 const MASS_TOLERANCE = 1e-4;   // allowed relative drift from the starting volume
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];

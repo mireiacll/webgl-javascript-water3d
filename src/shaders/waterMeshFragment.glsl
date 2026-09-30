@@ -9,7 +9,8 @@ uniform vec3 u_color;
 uniform float u_useRamp;   // 1 = color by the chosen quantity, 0 = flat u_color
 uniform vec3 u_ramp[5];
 
-const float MIN_DRAW_DEPTH = 0.05; // same cutoff as columnVertex.glsl
+const float MIN_DRAW_DEPTH = 0.05; // dry cutoff
+const float FADE_DEPTH = 0.3;      // water this much deeper than the cutoff is fully opaque
 
 vec3 ramp(float t) {
     float x = clamp(t, 0.0, 1.0) * 4.0;
@@ -22,5 +23,7 @@ void main() {
     vec3 lightDir = normalize(vec3(0.35, -0.45, 0.82));
     float diffuse = max(dot(normalize(v_normal), lightDir), 0.0);
     vec3 base = mix(u_color, ramp(v_t), u_useRamp);
-    fragColor = vec4(base * (0.4 + 0.6 * diffuse), 1.0);
+    // Plain water fades out toward the shore; colored data stays opaque so the legend stays accurate.
+    float alpha = mix(smoothstep(MIN_DRAW_DEPTH, MIN_DRAW_DEPTH + FADE_DEPTH, v_depth), 1.0, u_useRamp);
+    fragColor = vec4(base * (0.4 + 0.6 * diffuse), alpha);
 }

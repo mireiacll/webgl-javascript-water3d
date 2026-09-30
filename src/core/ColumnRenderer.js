@@ -121,9 +121,12 @@ export class ColumnRenderer {
         const gl = this.gl;
         this._setUniforms(layer, terrainTex, waterTex, worldWidth, r, g, b, 1.0);
 
-        // Offset fills slightly so coplanar outline lines pass the depth test.
-        gl.enable(gl.POLYGON_OFFSET_FILL);
-        gl.polygonOffset(-1, -1);
+        if (this.gapFraction > 0) {
+            gl.enable(gl.POLYGON_OFFSET_FILL);
+            gl.polygonOffset(-1, -1);
+        } else {
+            gl.disable(gl.POLYGON_OFFSET_FILL);
+        }
         gl.bindVertexArray(this.boxVao);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, BOX_VERTEX_COUNT, this.columnCount * this.columnCount);
         gl.bindVertexArray(null);
