@@ -83,7 +83,18 @@
     <p id="realTerrainStatus" class="info"></p>
 
     <hr />
-    <p class="section">Water drop </p>
+    <p class="section">Water source (locked while running)</p>
+
+    <div class="field">
+      <label for="simMode">Source</label>
+      <select id="simMode">
+        <option value="drop">Drop</option>
+        <option value="rain">Rain</option>
+      </select>
+    </div>
+
+    <div id="dropSection">
+    <p class="section">Water drop</p>
 
     <div class="field">
       <label for="dropPositionX">Drop position X (m)</label>
@@ -109,6 +120,27 @@
       <span id="dropVolumeM3Value" class="value"></span>
     </div>
     <p id="dropDepthInfo" class="info"></p>
+    </div>
+
+    <div id="rainSection" hidden>
+      <p class="section">Rain</p>
+
+      <div class="field">
+        <label for="rainRate">Rain rate (mm/h) - live</label>
+        <input type="range" id="rainRate" min="1" max="300" step="1" />
+        <span id="rainRateValue" class="value"></span>
+      </div>
+
+      <div class="field">
+        <label for="rainDuration">Stop rain after (min, 0 = manual)</label>
+        <input type="number" id="rainDuration" min="0" step="1" />
+      </div>
+
+      <div class="row buttons">
+        <button id="rainToggleBtn">Stop rain</button>
+      </div>
+      <p id="rainInfo" class="info" style="margin-top: var(--space-sm, 8px);"></p>
+    </div>
 
     <hr />
 

@@ -37,6 +37,11 @@ const TERRAIN_COLOR = [0.45, 0.35, 0.25];
 const WATER_COLOR_MODES = { none: 0, depth: 1, velocity: 2, flux: 3 };
 // Real flows stay well below critical speed, so the auto legend spans this fraction of it.
 const AUTO_RANGE_FRACTION = 0.5;
+// Rain has no starting drop to size substeps from, so the CFL depth comes from a periodic max-depth readback.
+const MAX_DEPTH_READ_EVERY_N_FRAMES = 30;
+const MIN_RAIN_CFL_DEPTH = 0.05;     // m, floor while the ground is still nearly dry
+const RAIN_CFL_DEPTH_MARGIN = 1.25;  // headroom for depth growth between readbacks
+const MM_PER_HOUR_TO_M_PER_S = 1 / 3.6e6;
 
 const SimState = { IDLE: 'IDLE', RUNNING: 'RUNNING', STOPPED: 'STOPPED' };
 
@@ -82,6 +87,9 @@ const params = {
     dropPositionY: DEFAULT_WORLD_WIDTH / 2,
     dropWidth: DEFAULT_DROP_WIDTH,
     dropVolumeM3: DEFAULT_DROP_VOLUME_M3,
+    mode: 'drop',             // drop | rain
+    rainMmPerHour: 50,
+    rainDurationMin: 0,       // 0 = rain until stopped by hand
     showOutline: true,
     terrainAsMesh: true,
     waterAsMesh: false,
@@ -196,11 +204,19 @@ let initialWaterVolume = 0;
 // Last drop seeded in IDLE; null forces a re-seed (fresh buffers, or coming back from a run).
 let idleSeedKey = null;
 let stepCounter = 0;
+
+// Rain bookkeeping. simTime is real-world seconds of simulated time; volume is analytic (rate * time * area).
+const rain = { active: false, volume: 0, simTime: 0, segmentTime: 0, maxDepth: 0, frames: 0 };
+function resetRainStats() {
+    Object.assign(rain, { active: false, volume: 0, simTime: 0, segmentTime: 0, maxDepth: 0, frames: 0 });
+}
+
 function checkWaterMass(label, alwaysLog = false) {
     const volume = measureWaterVolume();
-    const drift = initialWaterVolume > 0 ? (volume - initialWaterVolume) / initialWaterVolume : 0;
+    const expected = initialWaterVolume + rain.volume;
+    const drift = expected > 0 ? (volume - expected) / expected : 0;
     const ok = Math.abs(drift) <= MASS_TOLERANCE; // false for NaN too
-    const msg = `[mass] ${label}: ${volume.toFixed(3)} m^3 (start ${initialWaterVolume.toFixed(3)}, drift ${(drift * 100).toExponential(2)}%)`;
+    const msg = `[mass] ${label}: ${volume.toFixed(3)} m^3 (expected ${expected.toFixed(3)}, drift ${(drift * 100).toExponential(2)}%)`;
     if (!ok) console.warn(msg);
     else if (alwaysLog) console.log(msg);
 }
@@ -218,7 +234,7 @@ const ui = initUI({
     getState: () => state,
     getActiveWorldWidth: () => activeWorldWidth,
     hasImagery: () => !!imageryTexture,
-    actions: { applyImagery: applyImageryTexture, start: startSim, stop: stopSim, remove: deleteSim, regenerateTerrain, loadRealTerrain },
+    actions: { applyImagery: applyImageryTexture, start: startSim, stop: stopSim, remove: deleteSim, toggleRain, regenerateTerrain, loadRealTerrain },
 });
 
 // Load elevation and optional imagery, then apply them as one terrain update.
@@ -272,12 +288,22 @@ async function loadRealTerrain() {
 // Start resets the drop; stop freezes it; delete returns to the live preview.
 function startSim() {
     if (state !== SimState.IDLE) return;
+    const isRain = params.mode === 'rain';
     const { dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = computeDropRegion();
-    resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
+    resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, isRain ? 0 : dropDepth);
     initialWaterVolume = measureWaterVolume();
     stepCounter = 0;
-    console.log(`[mass] start: measured ${initialWaterVolume.toFixed(3)} m^3, expected ${params.dropVolumeM3.toFixed(3)} m^3`);
+    resetRainStats();
+    rain.active = isRain;
+    console.log(`[mass] start: measured ${initialWaterVolume.toFixed(3)} m^3, expected ${(isRain ? 0 : params.dropVolumeM3).toFixed(3)} m^3`);
     state = SimState.RUNNING;
+}
+
+// Pause or resume the rain while the simulation keeps running.
+function toggleRain() {
+    if (state !== SimState.RUNNING || params.mode !== 'rain') return;
+    rain.active = !rain.active;
+    if (rain.active) rain.segmentTime = 0; // the auto-stop timer restarts on each resume
 }
 
 function stopSim() {
@@ -290,6 +316,7 @@ function deleteSim() {
     if (state !== SimState.STOPPED) return;
     state = SimState.IDLE;
     idleSeedKey = null;
+    resetRainStats();
 }
 
 function regenerateTerrain() {
@@ -324,7 +351,7 @@ function computeDropRegion() {
 }
 
 
-// Legend max used when auto range is on, from the drop depth (no GPU readback needed).
+// Legend max used when auto range is on, from the reference depth (drop depth, or measured rain depth) (no GPU readback needed).
 function autoWaterRange(mode, dropDepth) {
     if (dropDepth <= 0) return 1;
     const critical = Math.sqrt(GRAVITY * dropDepth); // shallow-water wave speed
@@ -344,8 +371,18 @@ function frame() {
     const pipeLength = columnWidth;
     const columnArea = columnWidth * columnWidth;
 
+    const isRain = params.mode === 'rain';
+    const seedDepth = isRain ? 0 : dropDepth;
+    const rainRate = params.rainMmPerHour * MM_PER_HOUR_TO_M_PER_S; // m/s
+
+    // Rain: measure the deepest column now and then; rain.maxDepth also grows by the rain added since.
+    if (state === SimState.RUNNING && isRain && rain.frames % MAX_DEPTH_READ_EVERY_N_FRAMES === 0) {
+        rain.maxDepth = sim.waterPPB.current().readMaxDepth();
+    }
+    const refDepth = isRain ? Math.max(rain.maxDepth, MIN_RAIN_CFL_DEPTH) : dropDepth;
+
     // Choose enough substeps to respect the shallow-water CFL limit.
-    const maxWaterDepth = dropDepth;
+    const maxWaterDepth = isRain ? refDepth * RAIN_CFL_DEPTH_MARGIN : refDepth;
     const waveSpeed = maxWaterDepth > 0 ? Math.sqrt(GRAVITY * maxWaterDepth) : 0;
     const cflDt = waveSpeed > 0 ? CFL_NUMBER * columnWidth / waveSpeed : params.dt;
     const substeps = Math.max(1, Math.ceil(params.dt / cflDt));
@@ -358,16 +395,20 @@ function frame() {
             rebuildTerrainAndSim();
         }
         // Only rebuild the seed texture when the drop actually changed.
-        const seedKey = `${params.columnCount}|${dropStartCol}|${dropEndCol}|${dropStartRow}|${dropEndRow}|${dropDepth}`;
+        const seedKey = `${params.columnCount}|${dropStartCol}|${dropEndCol}|${dropStartRow}|${dropEndRow}|${seedDepth}`;
         if (seedKey !== idleSeedKey) {
-            resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
+            resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, seedDepth);
             idleSeedKey = seedKey;
         }
     }
 
     // Each step updates flux first, then applies it to water depth.
     if (state === SimState.RUNNING) {
+        const rainLimit = params.rainDurationMin * 60;
         for (let step = 0; step < substeps; step++) {
+            if (rain.active && rainLimit > 0 && rain.segmentTime >= rainLimit) rain.active = false;
+            const pourRate = (isRain && rain.active) ? rainRate : 0;
+
             sim.fluxPPB.next().bind();
             fluxUpdateRenderer.render(
                 sim.waterPPB.current().getTexture(), sim.fluxPPB.current().getTexture(), sim.terrainTexture,
@@ -380,16 +421,24 @@ function frame() {
             heightUpdateRenderer.render(
                 sim.waterPPB.current().getTexture(), sim.fluxPPB.current().getTexture(),
                 params.columnCount, columnArea, subDt, 0,
-                0, 0, 0, 0, 0,
+                0, 0, params.columnCount, params.columnCount, pourRate, // rain = pour over the whole grid
             );
             sim.waterPPB.next().unbind();
             sim.waterPPB.swap();
+
+            rain.simTime += subDt;
+            if (pourRate > 0) {
+                rain.volume += pourRate * subDt * activeWorldWidth ** 2;
+                rain.segmentTime += subDt;
+                rain.maxDepth += pourRate * subDt;
+            }
 
             stepCounter++;
             if (MASS_CHECK_EVERY_N_STEPS > 0 && stepCounter % MASS_CHECK_EVERY_N_STEPS === 0) {
                 checkWaterMass(`step ${stepCounter}`);
             }
         }
+        rain.frames++;
     }
     // Draw terrain first, then water and its optional outline.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -405,7 +454,7 @@ function frame() {
     sim.columnRenderer.setGapFraction(params.showOutline ? 0.1 : 0.0);
     const waterTexture = sim.waterPPB.current().getTexture();
     const colorMode = WATER_COLOR_MODES[params.waterColorMode] ?? 0;
-    const waterRangeMax = Math.max(1e-6, params.waterRangeAuto ? autoWaterRange(params.waterColorMode, dropDepth) : params.waterRangeMax);
+    const waterRangeMax = Math.max(1e-6, params.waterRangeAuto ? autoWaterRange(params.waterColorMode, refDepth) : params.waterRangeMax);
     const fluxTexture = sim.fluxPPB.current().getTexture();
     sim.columnRenderer.setFluxTexture(fluxTexture);
     sim.columnRenderer.setWaterColoring(colorMode, waterRangeMax);
@@ -425,7 +474,13 @@ function frame() {
         }
     }
 
-    ui.update(dropInfo, substeps, subDt, waterRangeMax);
+    const rainStats = {
+        active: rain.active,
+        simTime: rain.simTime,
+        volume: rain.volume,
+        depthMm: rain.volume / (activeWorldWidth ** 2) * 1000,
+    };
+    ui.update(dropInfo, substeps, subDt, waterRangeMax, rainStats);
 
     requestAnimationFrame(frame);
 }

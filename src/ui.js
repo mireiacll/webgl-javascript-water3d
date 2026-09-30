@@ -5,6 +5,12 @@ const MAX_DROP_DEPTH_FRACTION = 0.05;
 const DROP_VOLUME_SLIDER_STEPS = 1000;
 const DROP_VOLUME_CURVE_EXPONENT = 3;
 
+function formatClock(seconds) {
+    const t = Math.floor(seconds);
+    const pad = (v) => String(v).padStart(2, '0');
+    return `${pad(Math.floor(t / 3600))}:${pad(Math.floor(t / 60) % 60)}:${pad(t % 60)}`;
+}
+
 export function initUI({ params, realTerrain, SimState, getState, getActiveWorldWidth, hasImagery, actions }) {
     const el = (id) => document.getElementById(id);
     const stateLabel = el('stateLabel');
@@ -17,8 +23,11 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     const regenerateTerrainBtn = el('regenerateTerrainBtn');
     const loadRealTerrainBtn = el('loadRealTerrainBtn');
     const realTerrainStatus = el('realTerrainStatus');
+    const rainToggleBtn = el('rainToggleBtn');
+    const rainInfo = el('rainInfo');
 
     const lockedWhileRunningIds = [
+        'simMode',
         'columnCount', 'worldWidth', 'damping',
         'terrainHeightScale', 'regenerateTerrainBtn',
         'dropPositionX', 'dropPositionY', 'dropWidth', 'dropVolumeM3',
@@ -44,6 +53,7 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     bindSlider('dropPositionX', 'dropPositionX', (v) => v.toFixed(1));
     bindSlider('dropPositionY', 'dropPositionY', (v) => v.toFixed(1));
     bindSlider('dropWidth', 'dropWidth', (v) => v.toFixed(1));
+    bindSlider('rainRate', 'rainMmPerHour', (v) => v.toFixed(0));
 
     // A cubic mapping gives the volume slider more precision near zero.
     function currentDropVolumeMax() {
@@ -84,6 +94,21 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
         refreshDropVolumeSlider();
     }
     syncDropRanges();
+
+    // Water source: each mode has its own section.
+    const simModeEl = el('simMode');
+    function applyMode() {
+        el('dropSection').hidden = params.mode !== 'drop';
+        el('rainSection').hidden = params.mode !== 'rain';
+    }
+    simModeEl.value = params.mode;
+    simModeEl.addEventListener('change', (e) => { params.mode = e.target.value; applyMode(); });
+    applyMode();
+
+    const rainDurationEl = el('rainDuration');
+    rainDurationEl.value = params.rainDurationMin;
+    rainDurationEl.addEventListener('input', (e) => { params.rainDurationMin = Math.max(0, parseFloat(e.target.value) || 0); });
+    rainToggleBtn.addEventListener('click', actions.toggleRain);
 
     el('showOutline').checked = params.showOutline;
     el('showOutline').addEventListener('change', (e) => { params.showOutline = e.target.checked; });
@@ -156,13 +181,17 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     regenerateTerrainBtn.addEventListener('click', actions.regenerateTerrain);
 
     // Refresh state and numeric readouts after each frame.
-    function update(dropInfo, substeps, subDt, waterRangeMax) {
+    function update(dropInfo, substeps, subDt, waterRangeMax, rainStats) {
         const state = getState();
         stateLabel.textContent = `State: ${state}`;
 
         startBtn.disabled = state !== SimState.IDLE;
         stopBtn.disabled = state !== SimState.RUNNING;
         deleteBtn.disabled = state !== SimState.STOPPED;
+
+        rainToggleBtn.disabled = state !== SimState.RUNNING || params.mode !== 'rain';
+        rainToggleBtn.textContent = (state === SimState.RUNNING && !rainStats.active) ? 'Resume rain' : 'Stop rain';
+        rainInfo.textContent = `t ${formatClock(rainStats.simTime)} -> ${rainStats.depthMm.toFixed(1)} mm of rain = ${rainStats.volume.toFixed(0)} m^3`;
 
         for (const id of lockedWhileRunningIds) {
             el(id).disabled = state !== SimState.IDLE;

@@ -39,18 +39,31 @@ export class WaterFBO {
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     }
 
-    // Sum of water depth (R) over all columns. GPU readback stalls the pipeline: debug use only.
-    readTotalDepth() {
+    // GPU readbacks stall the pipeline: debug use, or a coarse periodic check.
+    _readPixels() {
         const gl = this.gl;
         const n = this.columnCount;
         const data = new Float32Array(n * n * 4);
         this.bind();
         gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, data);
         this.unbind();
+        return data;
+    }
 
+    // Sum of water depth (R) over all columns.
+    readTotalDepth() {
+        const data = this._readPixels();
         let sum = 0;
-        for (let i = 0; i < n * n; i++) sum += data[i * 4];
+        for (let i = 0; i < this.columnCount * this.columnCount; i++) sum += data[i * 4];
         return sum;
+    }
+
+    // Deepest column (R); rain mode sizes the CFL substeps from it.
+    readMaxDepth() {
+        const data = this._readPixels();
+        let max = 0;
+        for (let i = 0; i < this.columnCount * this.columnCount; i++) max = Math.max(max, data[i * 4]);
+        return max;
     }
 
     dispose() {
