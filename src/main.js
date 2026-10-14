@@ -35,6 +35,14 @@ const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
 const TERRAIN_COLOR = [0.45, 0.35, 0.25];
 const WATER_COLOR_MODES = { none: 0, depth: 1, velocity: 2, flux: 3 };
+
+// Top-down data views: each DOM square (index.html) becomes a scissored viewport showing one water quantity.
+const MINIMAPS = [
+    { elId: 'minimapDepth', mode: 'depth' },
+    { elId: 'minimapVelocity', mode: 'velocity' },
+    { elId: 'minimapFlux', mode: 'flux' },
+].map((p) => ({ ...p, el: document.getElementById(p.elId) }));
+const MINIMAP_CLEAR_COLOR = [0.05, 0.05, 0.08];
 // Real flows stay well below critical speed, so the auto legend spans this fraction of it.
 const AUTO_RANGE_FRACTION = 0.5;
 // Rain has no starting drop to size substeps from, so the CFL depth comes from a periodic max-depth readback.
@@ -94,12 +102,17 @@ const params = {
     terrainAsMesh: true,
     waterAsMesh: false,
     waterColorMode: 'none',   // none | depth | velocity | flux
-    waterRangeAuto: true,
-    waterRangeMax: 1,
+    // Legend range per quantity: auto estimate or a typed-in value, remembered when you switch quantities.
+    waterRanges: {
+        depth: { auto: true, max: 1 },
+        velocity: { auto: true, max: 1 },
+        flux: { auto: true, max: 1 },
+    },
     terrainSource: 'procedural',
     centerLat: 45.8326,
     centerLon: 6.8652,
     showImagery: true,
+    showMinimaps: true,
 };
 
 const realTerrain = {
@@ -160,7 +173,7 @@ function rebuildTerrainAndSim() {
     sim.fluxPPB.dispose();
     gl.deleteTexture(sim.terrainTexture);
     sim = buildSimResources(params.columnCount, activeWorldWidth);
-    terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth);
+    terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth, params.columnCount);
     cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
     cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3));
     resourceColumnCount = params.columnCount;
@@ -211,6 +224,7 @@ function resetRainStats() {
     Object.assign(rain, { active: false, volume: 0, simTime: 0, segmentTime: 0, maxDepth: 0, frames: 0 });
 }
 
+
 function checkWaterMass(label, alwaysLog = false) {
     const volume = measureWaterVolume();
     const expected = initialWaterVolume + rain.volume;
@@ -222,7 +236,7 @@ function checkWaterMass(label, alwaysLog = false) {
 }
 
 let sim = buildSimResources(params.columnCount, activeWorldWidth);
-terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth);
+terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth, params.columnCount);
 let resourceColumnCount = params.columnCount;
 let state = SimState.IDLE;
 
@@ -351,14 +365,67 @@ function computeDropRegion() {
 }
 
 
-// Legend max used when auto range is on, from the reference depth (drop depth, or measured rain depth) (no GPU readback needed).
-function autoWaterRange(mode, dropDepth) {
-    if (dropDepth <= 0) return 1;
-    const critical = Math.sqrt(GRAVITY * dropDepth); // shallow-water wave speed
-    if (mode === 'depth') return dropDepth;
+// Auto legend max, estimated from the reference depth (drop depth, or measured rain depth); no GPU readback needed.
+function autoWaterRange(mode, refDepth) {
+    if (refDepth <= 0) return 1;
+    const critical = Math.sqrt(GRAVITY * refDepth); // shallow-water wave speed
+    if (mode === 'depth') return refDepth;
     if (mode === 'velocity') return AUTO_RANGE_FRACTION * critical;   // m/s
-    if (mode === 'flux') return AUTO_RANGE_FRACTION * critical * dropDepth; // m^2/s
+    if (mode === 'flux') return AUTO_RANGE_FRACTION * critical * refDepth; // m^2/s
     return 1;
+}
+
+// Legend max for one quantity: the auto estimate, or the value typed in for that quantity.
+function rangeFor(mode, refDepth) {
+    const r = params.waterRanges[mode];
+    if (!r) return 1;
+    return r.auto ? Math.max(1e-6, autoWaterRange(mode, refDepth)) : r.max;
+}
+
+// Orthographic view straight down the tank. Depth follows the main camera's reversed convention
+// (nearer = larger, depthFunc GEQUAL), so higher z maps to larger clip z.
+function topDownMatrix(worldWidth, zLo, zHi) {
+    const range = zHi - zLo;
+    return new Float32Array([
+        2 / worldWidth, 0, 0, 0,
+        0, 2 / worldWidth, 0, 0,
+        0, 0, 2 / range, 0,
+        -1, -1, -(1 + 2 * zLo / range), 1,
+    ]);
+}
+
+// Draw terrain + colored water from above into each minimap square. Returns each panel's legend max.
+function renderMinimaps(waterTexture, fluxTexture, sceneTop, refDepth) {
+    const canvasRect = canvas.getBoundingClientRect();
+    const scale = canvas.width / canvasRect.width;
+    const viewProj = topDownMatrix(activeWorldWidth, -1, sceneTop);
+    const ranges = {};
+
+    waterMeshRenderer.setFluxTexture(fluxTexture);
+    gl.enable(gl.SCISSOR_TEST);
+    for (const { el, mode } of MINIMAPS) {
+        const range = rangeFor(mode, refDepth);
+        ranges[mode] = range;
+
+        const r = el.getBoundingClientRect();
+        const w = Math.round(r.width * scale);
+        const h = Math.round(r.height * scale);
+        if (w < 2 || h < 2) continue;
+        const x = Math.round((r.left - canvasRect.left) * scale);
+        const y = Math.round(canvas.height - (r.bottom - canvasRect.top) * scale);
+
+        gl.viewport(x, y, w, h);
+        gl.scissor(x, y, w, h);
+        gl.clearColor(...MINIMAP_CLEAR_COLOR, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        terrainMeshRenderer.render(viewProj, ...TERRAIN_COLOR);
+        waterMeshRenderer.setWaterColoring(WATER_COLOR_MODES[mode], range);
+        waterMeshRenderer.render(viewProj, sim.terrainTexture, waterTexture, params.columnCount, activeWorldWidth, ...WATER_COLOR);
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    return ranges;
 }
 
 // Advance simulation state, render the scene, then schedule the next frame.
@@ -454,7 +521,7 @@ function frame() {
     sim.columnRenderer.setGapFraction(params.showOutline ? 0.1 : 0.0);
     const waterTexture = sim.waterPPB.current().getTexture();
     const colorMode = WATER_COLOR_MODES[params.waterColorMode] ?? 0;
-    const waterRangeMax = Math.max(1e-6, params.waterRangeAuto ? autoWaterRange(params.waterColorMode, refDepth) : params.waterRangeMax);
+    const waterRangeMax = rangeFor(params.waterColorMode, refDepth);
     const fluxTexture = sim.fluxPPB.current().getTexture();
     sim.columnRenderer.setFluxTexture(fluxTexture);
     sim.columnRenderer.setWaterColoring(colorMode, waterRangeMax);
@@ -474,13 +541,18 @@ function frame() {
         }
     }
 
+    // After the main view, since this reuses the water mesh renderer with its own coloring.
+    const minimapRanges = params.showMinimaps
+        ? renderMinimaps(waterTexture, fluxTexture, maxSceneHeight + refDepth, refDepth)
+        : null;
+
     const rainStats = {
         active: rain.active,
         simTime: rain.simTime,
         volume: rain.volume,
         depthMm: rain.volume / (activeWorldWidth ** 2) * 1000,
     };
-    ui.update(dropInfo, substeps, subDt, waterRangeMax, rainStats);
+    ui.update(dropInfo, substeps, subDt, waterRangeMax, rainStats, minimapRanges);
 
     requestAnimationFrame(frame);
 }

@@ -34,19 +34,23 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
         'centerLat', 'centerLon', 'loadRealTerrainBtn',
     ];
 
-    function bindSlider(id, paramKey, format = (v) => v) {
+    function bindSlider(id, paramKey, format = (v) => v, commitOnChange = false) {
         const input = el(id);
         const valueEl = el(`${id}Value`);
         input.value = params[paramKey];
         valueEl.textContent = format(params[paramKey]);
         input.addEventListener('input', () => {
-            params[paramKey] = parseFloat(input.value);
+            if (!commitOnChange) params[paramKey] = parseFloat(input.value);
             valueEl.textContent = format(params[paramKey]);
+            if (commitOnChange) valueEl.textContent = format(parseFloat(input.value));
         });
+        if (commitOnChange) {
+            input.addEventListener('change', () => { params[paramKey] = parseFloat(input.value); });
+        }
     }
 
     bindSlider('dt', 'dt', (v) => v.toFixed(4));
-    bindSlider('columnCount', 'columnCount', (v) => Math.round(v));
+    bindSlider('columnCount', 'columnCount', (v) => Math.round(v), true);
     bindSlider('worldWidth', 'worldWidth', (v) => v.toFixed(1));
     bindSlider('damping', 'damping', (v) => v.toFixed(3));
     bindSlider('terrainHeightScale', 'terrainHeightScale', (v) => v.toFixed(1));
@@ -113,6 +117,13 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     el('showOutline').checked = params.showOutline;
     el('showOutline').addEventListener('change', (e) => { params.showOutline = e.target.checked; });
 
+    el('showMinimaps').checked = params.showMinimaps;
+    el('minimaps').hidden = !params.showMinimaps;
+    el('showMinimaps').addEventListener('change', (e) => {
+        params.showMinimaps = e.target.checked;
+        el('minimaps').hidden = !e.target.checked;
+    });
+
     el('terrainAsMesh').checked = params.terrainAsMesh;
     el('terrainAsMesh').addEventListener('change', (e) => { params.terrainAsMesh = e.target.checked; });
 
@@ -132,22 +143,30 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     const rgb = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
     el('legendBar').style.background = `linear-gradient(to right, ${COLOR_RAMP.map(rgb).join(', ')})`;
 
+    // Each quantity remembers its own range setting (auto or typed-in) when you switch between them.
+    const currentRange = () => params.waterRanges[params.waterColorMode];
+    function syncRangeControls() {
+        const r = currentRange();
+        rangeAutoEl.checked = r ? r.auto : true;
+        if (r && !r.auto) rangeMaxEl.value = r.max;
+    }
     colorModeEl.value = params.waterColorMode;
-    rangeAutoEl.checked = params.waterRangeAuto;
-    rangeMaxEl.value = params.waterRangeMax;
+    syncRangeControls();
     colorModeEl.addEventListener('change', (e) => {
         params.waterColorMode = e.target.value;
-        // Units change with the quantity, so go back to the automatic range.
-        params.waterRangeAuto = true;
-        rangeAutoEl.checked = true;
+        syncRangeControls();
     });
     rangeAutoEl.addEventListener('change', (e) => {
-        params.waterRangeAuto = e.target.checked;
-        if (!e.target.checked) params.waterRangeMax = parseFloat(rangeMaxEl.value) || 1;
+        const r = currentRange();
+        if (!r) return;
+        r.auto = e.target.checked;
+        // Unticking freezes the range at the value shown now.
+        if (!r.auto) r.max = parseFloat(rangeMaxEl.value) || r.max;
     });
     rangeMaxEl.addEventListener('input', (e) => {
+        const r = currentRange();
         const v = parseFloat(e.target.value);
-        if (v > 0) params.waterRangeMax = v;
+        if (r && v > 0) r.max = v;
     });
 
     el('showImagery').checked = params.showImagery;
@@ -181,7 +200,7 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     regenerateTerrainBtn.addEventListener('click', actions.regenerateTerrain);
 
     // Refresh state and numeric readouts after each frame.
-    function update(dropInfo, substeps, subDt, waterRangeMax, rainStats) {
+    function update(dropInfo, substeps, subDt, waterRangeMax, rainStats, minimapRanges) {
         const state = getState();
         stateLabel.textContent = `State: ${state}`;
 
@@ -204,15 +223,23 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
             `(spanning ${dropInfo.dropEndCol - dropInfo.dropStartCol} x ${dropInfo.dropEndRow - dropInfo.dropStartRow} columns, ` +
             `${dropInfo.dropSizeX.toFixed(1)} x ${dropInfo.dropSizeY.toFixed(1)} m)`;
 
+        if (minimapRanges) {
+            for (const [mode, range] of Object.entries(minimapRanges)) {
+                el(`minimapMax_${mode}`).textContent = range.toPrecision(3);
+            }
+        }
+
         // Water legend: hidden when nothing is colored; range box mirrors the auto value.
         const info = LEGEND_INFO[params.waterColorMode];
         legendEl.hidden = !info;
-        rangeMaxEl.disabled = params.waterRangeAuto;
+        const range = params.waterRanges[params.waterColorMode];
+        rangeAutoEl.disabled = !range;
+        rangeMaxEl.disabled = !range || range.auto;
         if (info) {
             el('legendTitle').textContent = `${info.title} (${info.unit})`;
             el('legendMin').textContent = '0';
             el('legendMax').textContent = waterRangeMax.toPrecision(3);
-            if (params.waterRangeAuto) rangeMaxEl.value = waterRangeMax.toPrecision(3);
+            if (range.auto) rangeMaxEl.value = waterRangeMax.toPrecision(3);
         }
     }
 

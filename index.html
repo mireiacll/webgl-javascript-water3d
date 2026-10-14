@@ -5,6 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Water Columns</title>
   <link rel="stylesheet" href="/src/style.css" />
+  <style>
+    #minimaps {
+      --minimap-size: min(180px, 26vh);
+      --minimap-gap: 12px;
+      --minimap-border: rgba(255, 255, 255, 0.35);
+      --minimap-label-bg: rgba(10, 10, 20, 0.6);
+      position: fixed;
+      top: var(--minimap-gap);
+      left: var(--minimap-gap);
+      display: flex;
+      flex-direction: column;
+      gap: var(--minimap-gap);
+      pointer-events: none;
+    }
+    #minimaps[hidden] { display: none; }
+    .minimap {
+      position: relative;
+      box-sizing: border-box;
+      width: var(--minimap-size);
+      height: var(--minimap-size);
+      border: 1px solid var(--minimap-border);
+    }
+    .minimap-label {
+      position: absolute;
+      left: 4px;
+      top: 4px;
+      padding: 1px 5px;
+      font: 11px sans-serif;
+      color: #fff;
+      background: var(--minimap-label-bg);
+      border-radius: 3px;
+    }
+  </style>
 </head>
 <body>
   <canvas id="glCanvas"></canvas>
@@ -159,6 +192,11 @@
       <input type="checkbox" id="waterAsMesh" />
     </div>
 
+    <div class="field checkbox-field">
+      <label for="showMinimaps">Show top-down data views</label>
+      <input type="checkbox" id="showMinimaps" checked />
+    </div>
+
     <hr />
     <p class="section">Water coloring (live, works while running)</p>
 
@@ -190,6 +228,18 @@
     <div id="legendBar" style="height:12px;border-radius:2px;"></div>
     <div style="display:flex;justify-content:space-between;margin-top:2px;">
       <span id="legendMin">0</span><span id="legendMax"></span>
+    </div>
+  </div>
+
+  <div id="minimaps">
+    <div class="minimap" id="minimapDepth">
+      <span class="minimap-label">Water level (m), max <span id="minimapMax_depth"></span></span>
+    </div>
+    <div class="minimap" id="minimapVelocity">
+      <span class="minimap-label">Velocity (m/s), max <span id="minimapMax_velocity"></span></span>
+    </div>
+    <div class="minimap" id="minimapFlux">
+      <span class="minimap-label">Flux (m&sup2;/s), max <span id="minimapMax_flux"></span></span>
     </div>
   </div>
 

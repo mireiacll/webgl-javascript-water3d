@@ -1,7 +1,7 @@
 import { buildProgram } from './glUtils.js';
 import vertexSource from '../shaders/terrainMeshVertex.glsl?raw';
 import fragmentSource from '../shaders/terrainMeshFragment.glsl?raw';
-import { MireiaTerrainMesh, proceduralHeightSampler } from '../geo/MireiaTerrainMesh.js';
+import { proceduralHeightSampler } from '../geo/MireiaTerrainMesh.js';
 
 // Builds the sampled terrain on the CPU, uploads it once, then draws indexed triangles.
 export class TerrainMeshRenderer {
@@ -32,17 +32,52 @@ export class TerrainMeshRenderer {
         const gl = this.gl;
         this.dispose();
 
-        // Pack each vertex as position, normal, and imagery UV.
-        const mesh = new MireiaTerrainMesh(heightSampler, worldWidth, worldWidth, resolution);
-        const vertices = mesh.getVertices();
-        const indices = mesh.getScene().getRoot().getIndices();
+        const side = resolution + 1;
+        const vertexCount = side * side;
+        const heights = new Float32Array(vertexCount);
+        const data = new Float32Array(vertexCount * 8);
+        const indices = new Uint32Array(resolution * resolution * 6);
+        const spacing = worldWidth / resolution;
 
-        const data = new Float32Array(vertices.length * 8);
-        for (let i = 0; i < vertices.length; i++) {
-            const p = vertices[i].getPosition();
-            const n = vertices[i].getNormal();
-            const uv = vertices[i].getTexCoord();
-            data.set([p.getX(), p.getY(), p.getZ(), n.getX(), n.getY(), n.getZ(), uv.getX(), uv.getY()], i * 8);
+        for (let row = 0; row < side; row++) {
+            const y = row * spacing;
+            for (let col = 0; col < side; col++) {
+                const x = col * spacing;
+                heights[row * side + col] = heightSampler(x, y);
+            }
+        }
+
+        for (let row = 0; row < side; row++) {
+            const y = row * spacing;
+            const lowerRow = Math.max(0, row - 1);
+            const upperRow = Math.min(resolution, row + 1);
+            for (let col = 0; col < side; col++) {
+                const leftCol = Math.max(0, col - 1);
+                const rightCol = Math.min(resolution, col + 1);
+                const index = row * side + col;
+                const z = heights[index];
+                const dzdx = (heights[row * side + rightCol] - heights[row * side + leftCol]) / ((rightCol - leftCol) * spacing || 1);
+                const dzdy = (heights[upperRow * side + col] - heights[lowerRow * side + col]) / ((upperRow - lowerRow) * spacing || 1);
+                const normalLength = Math.hypot(dzdx, dzdy, 1);
+                const offset = index * 8;
+                data.set([
+                    col * spacing, y, z,
+                    -dzdx / normalLength, -dzdy / normalLength, 1 / normalLength,
+                    col / resolution, 1 - row / resolution,
+                ], offset);
+            }
+        }
+
+        let indexOffset = 0;
+        for (let row = 0; row < resolution; row++) {
+            for (let col = 0; col < resolution; col++) {
+                const sw = row * side + col;
+                const se = sw + 1;
+                const nw = sw + side;
+                const ne = nw + 1;
+                indices.set([sw, se, ne, sw, ne, nw], indexOffset);
+                indexOffset += 6;
+            }
         }
 
         this.vao = gl.createVertexArray();
@@ -62,7 +97,7 @@ export class TerrainMeshRenderer {
 
         this.indexBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indices), gl.STATIC_DRAW);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
         this.indexCount = indices.length;
 
         gl.bindVertexArray(null);
