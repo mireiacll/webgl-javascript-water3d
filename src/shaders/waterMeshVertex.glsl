@@ -12,6 +12,7 @@ uniform float u_rangeMax;     // legend max, same units as the chosen quantity
 out vec3 v_normal;
 out float v_depth;
 out float v_t;                // chosen quantity, normalized to 0..1 by u_rangeMax
+const float GRAVITY = 9.8;
 
 const ivec2 CORNERS[6] = ivec2[6](ivec2(0,0), ivec2(1,0), ivec2(1,1), ivec2(0,0), ivec2(1,1), ivec2(0,1));
 
@@ -31,7 +32,7 @@ float cellMetric(ivec2 c, int n, float d) {
     if (u_colorMode == 1) return h;
     float q = length(cellDischarge(c, n, d));
     if (u_colorMode == 3) return q;
-    return h > 1e-3 ? q / h : 0.0; // velocity = discharge / depth
+    return h > 1e-3 ? min(q / h, sqrt(GRAVITY * h)) : 0.0;
 }
 
 // Average the (up to) four cells touching a grid corner -> (surface z, water depth, chosen metric).

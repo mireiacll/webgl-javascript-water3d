@@ -24,6 +24,7 @@ out vec2 v_texCoord; // derived from world xy below, not a separate attribute - 
 // water shallower than this (meters) is still simulated but not drawn - hides the thin film that barely moves,
 // and avoids zero-height boxes z-fighting with the terrain top
 const float MIN_DRAW_DEPTH = 0.05;
+const float GRAVITY = 9.8;
 
 // Net discharge per unit width (m^2/s) through a cell, from the four pipes around it.
 vec2 cellDischarge(ivec2 c, int n, float d) {
@@ -41,7 +42,7 @@ float cellMetric(ivec2 c, int n, float d) {
     if (u_colorMode == 1) return h;
     float q = length(cellDischarge(c, n, d));
     if (u_colorMode == 3) return q;
-    return h > 1e-3 ? q / h : 0.0; // velocity = discharge / depth
+    return h > 1e-3 ? min(q / h, sqrt(GRAVITY * h)) : 0.0;
 }
 
 void main() {
