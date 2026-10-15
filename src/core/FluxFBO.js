@@ -41,6 +41,17 @@ export class FluxFBO {
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     }
 
+    // GPU readback (stalls the pipeline, so call it only now and then): RGBA per texel = (right, left, up, down).
+    readPixels() {
+        const gl = this.gl;
+        const n = this.columnCount;
+        const data = new Float32Array(n * n * 4);
+        this.bind();
+        gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, data);
+        this.unbind();
+        return data;
+    }
+
     dispose() {
         const gl = this.gl;
         gl.deleteFramebuffer(this.framebuffer);

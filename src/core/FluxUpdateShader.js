@@ -18,6 +18,7 @@ export class FluxUpdateShader {
         this.uPipeLengthLoc = gl.getUniformLocation(this.program, 'u_pipeLength');
         this.uDtLoc = gl.getUniformLocation(this.program, 'u_dt');
         this.uDampingLoc = gl.getUniformLocation(this.program, 'u_damping');
+        this.uOpenBoundaryLoc = gl.getUniformLocation(this.program, 'u_openBoundary');
 
         for (const [key, loc] of Object.entries(this)) {
             if (key.endsWith('Loc') && (loc === null || loc === undefined || loc === -1)) {

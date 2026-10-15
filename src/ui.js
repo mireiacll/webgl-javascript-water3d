@@ -114,6 +114,9 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     rainDurationEl.addEventListener('input', (e) => { params.rainDurationMin = Math.max(0, parseFloat(e.target.value) || 0); });
     rainToggleBtn.addEventListener('click', actions.toggleRain);
 
+    el('openBoundary').checked = params.openBoundary;
+    el('openBoundary').addEventListener('change', (e) => { params.openBoundary = e.target.checked; });
+
     el('showOutline').checked = params.showOutline;
     el('showOutline').addEventListener('change', (e) => { params.showOutline = e.target.checked; });
 

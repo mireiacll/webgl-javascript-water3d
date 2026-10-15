@@ -47,6 +47,11 @@ const MINIMAP_CLEAR_COLOR = [0.05, 0.05, 0.08];
 const AUTO_RANGE_FRACTION = 0.5;
 // Rain has no starting drop to size substeps from, so the CFL depth comes from a periodic max-depth readback.
 const MAX_DEPTH_READ_EVERY_N_FRAMES = 30;
+// Auto legend: measure the real water now and then instead of only estimating from the starting drop.
+const AUTO_RANGE_READ_EVERY_N_FRAMES = 30;
+const AUTO_RANGE_PERCENTILE = 0.95;  // of the wet columns; 1.0 = true maximum (one extreme column can dominate it)
+const AUTO_RANGE_FALL_RATE = 0.2;    // the legend max drops this fraction of the way to a lower measurement each read (it rises instantly)
+const AUTO_RANGE_WET_DEPTH = 1e-3;   // m, columns shallower than this are ignored (same threshold as the velocity shader)
 const MIN_RAIN_CFL_DEPTH = 0.05;     // m, floor while the ground is still nearly dry
 const RAIN_CFL_DEPTH_MARGIN = 1.25;  // headroom for depth growth between readbacks
 const MM_PER_HOUR_TO_M_PER_S = 1 / 3.6e6;
@@ -113,6 +118,7 @@ const params = {
     centerLon: 6.8652,
     showImagery: true,
     showMinimaps: true,
+    openBoundary: false,      // false = water stays inside (closed walls), true = water flows out of the borders
 };
 
 const realTerrain = {
@@ -308,6 +314,7 @@ function startSim() {
     initialWaterVolume = measureWaterVolume();
     stepCounter = 0;
     resetRainStats();
+    resetMeasuredRange();
     rain.active = isRain;
     console.log(`[mass] start: measured ${initialWaterVolume.toFixed(3)} m^3, expected ${(isRain ? 0 : params.dropVolumeM3).toFixed(3)} m^3`);
     state = SimState.RUNNING;
@@ -331,6 +338,7 @@ function deleteSim() {
     state = SimState.IDLE;
     idleSeedKey = null;
     resetRainStats();
+    resetMeasuredRange();
 }
 
 function regenerateTerrain() {
@@ -365,8 +373,67 @@ function computeDropRegion() {
 }
 
 
-// Auto legend max, estimated from the reference depth (drop depth, or measured rain depth); no GPU readback needed.
+// Latest measured legend max per quantity (0 = nothing measured yet, so the estimate is used).
+const measuredRange = { depth: 0, velocity: 0, flux: 0 };
+function resetMeasuredRange() {
+    measuredRange.depth = measuredRange.velocity = measuredRange.flux = 0;
+}
+
+function percentileOf(sorted, p) {
+    return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))] : 0;
+}
+
+// Read water + flux back from the GPU and measure depth, velocity and flux of the wet columns.
+// Velocity and flux use the same formulas as cellMetric() in waterMeshVertex.glsl, so the legend matches the colors.
+function updateMeasuredRange(columnWidth) {
+    const n = params.columnCount;
+    const water = sim.waterPPB.current()._readPixels();
+    const flux = sim.fluxPPB.current().readPixels();
+    const depths = new Float32Array(n * n);
+    const velocities = new Float32Array(n * n);
+    const fluxes = new Float32Array(n * n);
+    let wet = 0;
+
+    for (let row = 0; row < n; row++) {
+        for (let col = 0; col < n; col++) {
+            const i = row * n + col;
+            const h = water[i * 4];
+            if (h <= AUTO_RANGE_WET_DEPTH) continue;
+
+            const fromLeft  = col > 0     ? flux[(i - 1) * 4]     : 0;
+            const fromRight = col < n - 1 ? flux[(i + 1) * 4 + 1] : 0;
+            const fromDown  = row > 0     ? flux[(i - n) * 4 + 2] : 0;
+            const fromUp    = row < n - 1 ? flux[(i + n) * 4 + 3] : 0;
+            const qx = 0.5 * (fromLeft - flux[i * 4 + 1] + flux[i * 4]     - fromRight) / columnWidth;
+            const qy = 0.5 * (fromDown - flux[i * 4 + 3] + flux[i * 4 + 2] - fromUp)    / columnWidth;
+            const q = Math.hypot(qx, qy);
+
+            depths[wet] = h;
+            fluxes[wet] = q;
+            velocities[wet] = Math.min(q / h, Math.sqrt(GRAVITY * h));
+            wet++;
+        }
+    }
+
+    const targets = {
+        depth: percentileOf(depths.subarray(0, wet).sort(), AUTO_RANGE_PERCENTILE),
+        velocity: percentileOf(velocities.subarray(0, wet).sort(), AUTO_RANGE_PERCENTILE),
+        flux: percentileOf(fluxes.subarray(0, wet).sort(), AUTO_RANGE_PERCENTILE),
+    };
+    for (const mode of Object.keys(targets)) {
+        const target = targets[mode];
+        if (!(target > 0)) continue; // nothing to measure (e.g. still at rest): keep what we have
+        const current = measuredRange[mode];
+        // Rise at once so colors never saturate; fall gradually so the legend doesn't flicker.
+        measuredRange[mode] = (current <= 0 || target > current)
+            ? target
+            : current + (target - current) * AUTO_RANGE_FALL_RATE;
+    }
+}
+
+// Auto legend max: the measured value if there is one, otherwise estimated from the reference depth (drop depth, or measured rain depth).
 function autoWaterRange(mode, refDepth) {
+    if (measuredRange[mode] > 0) return measuredRange[mode]; // real measurement, once one exists
     if (refDepth <= 0) return 1;
     const critical = Math.sqrt(GRAVITY * refDepth); // shallow-water wave speed
     if (mode === 'depth') return refDepth;
@@ -448,6 +515,12 @@ function frame() {
     }
     const refDepth = isRain ? Math.max(rain.maxDepth, MIN_RAIN_CFL_DEPTH) : dropDepth;
 
+    // Auto legend: only measure when something on screen actually uses it.
+    if (state === SimState.RUNNING && rain.frames % AUTO_RANGE_READ_EVERY_N_FRAMES === 0 &&
+        (params.waterColorMode !== 'none' || params.showMinimaps)) {
+        updateMeasuredRange(columnWidth);
+    }
+
     // Choose enough substeps to respect the shallow-water CFL limit.
     const maxWaterDepth = isRain ? refDepth * RAIN_CFL_DEPTH_MARGIN : refDepth;
     const waveSpeed = maxWaterDepth > 0 ? Math.sqrt(GRAVITY * maxWaterDepth) : 0;
@@ -480,6 +553,7 @@ function frame() {
             fluxUpdateRenderer.render(
                 sim.waterPPB.current().getTexture(), sim.fluxPPB.current().getTexture(), sim.terrainTexture,
                 params.columnCount, pipeArea, pipeLength, subDt, substepDamping,
+                params.openBoundary ? 1 : 0,
             );
             sim.fluxPPB.next().unbind();
             sim.fluxPPB.swap();

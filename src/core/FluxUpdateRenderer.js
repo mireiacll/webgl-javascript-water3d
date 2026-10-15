@@ -37,7 +37,7 @@ export class FluxUpdateRenderer {
         gl.bindVertexArray(null);
     }
 
-    render(heightTexId, fluxTexId, terrainTexId, columnCount, pipeArea, pipeLength, dt, damping) {
+    render(heightTexId, fluxTexId, terrainTexId, columnCount, pipeArea, pipeLength, dt, damping, openBoundary) {
         const gl = this.gl;
         gl.useProgram(this.shader.program);
 
@@ -60,6 +60,7 @@ export class FluxUpdateRenderer {
         gl.uniform1f(this.shader.uPipeLengthLoc, pipeLength);
         gl.uniform1f(this.shader.uDtLoc, dt);
         gl.uniform1f(this.shader.uDampingLoc, damping);
+        gl.uniform1f(this.shader.uOpenBoundaryLoc, openBoundary);
 
         gl.bindVertexArray(this.vao);
         gl.drawArrays(gl.TRIANGLES, 0, 6);

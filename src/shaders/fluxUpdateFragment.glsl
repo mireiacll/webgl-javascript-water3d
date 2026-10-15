@@ -14,14 +14,16 @@ uniform float u_pipeArea;    // d*d, also equals a column's footprint area
 uniform float u_pipeLength;  // d
 uniform float u_dt;
 uniform float u_damping;
+uniform float u_openBoundary; // 1 = water leaves through the borders, 0 = closed walls
 
 const float GRAVITY = 9.8;
 
 // flux through the one pipe that connects this column to the neighbor at v_texCoord + offset.
-float pipeFlux(vec2 offset, float fOld, float terrainHere, float surfHere) {
+// outside = true: the neighbor is beyond the border, assumed same terrain height and dry.
+float pipeFlux(vec2 offset, float fOld, float terrainHere, float surfHere, bool outside) {
     vec2 uvN = v_texCoord + offset;
-    float terrainN = texture(u_terrain, uvN).r;
-    float surfN = terrainN + texture(u_height, uvN).r;
+    float terrainN = outside ? terrainHere : texture(u_terrain, uvN).r;
+    float surfN = outside ? terrainHere : terrainN + texture(u_height, uvN).r;
     float hFace = max(0.0, max(surfHere, surfN) - max(terrainHere, terrainN));
     float f = max((fOld + u_dt * (u_pipeLength * hFace) * GRAVITY * (surfHere - surfN) / u_pipeLength) * u_damping, 0.0);
     if (surfHere <= terrainN) f = 0.0; // wall: can't flow into taller terrain
@@ -41,12 +43,13 @@ void main() {
     float surfHere = terrainHere + depthHere;
     vec4 fOld = texture(u_flux, v_texCoord);
 
-    // edge columns have no neighbor on that side, their flux there stays 0 (closed wall)
+    // edge columns: closed wall (flux 0) unless u_openBoundary is set, then they drain into a ghost cell
     vec4 f = vec4(0.0);
-    if (hasRight) f.r = pipeFlux(vec2( u_texel, 0.0), fOld.r, terrainHere, surfHere);
-    if (hasLeft)  f.g = pipeFlux(vec2(-u_texel, 0.0), fOld.g, terrainHere, surfHere);
-    if (hasUp)    f.b = pipeFlux(vec2(0.0,  u_texel), fOld.b, terrainHere, surfHere);
-    if (hasDown)  f.a = pipeFlux(vec2(0.0, -u_texel), fOld.a, terrainHere, surfHere);
+    bool openEdges = u_openBoundary > 0.5;
+    if (hasRight || openEdges) f.r = pipeFlux(vec2( u_texel, 0.0), fOld.r, terrainHere, surfHere, !hasRight);
+    if (hasLeft  || openEdges) f.g = pipeFlux(vec2(-u_texel, 0.0), fOld.g, terrainHere, surfHere, !hasLeft);
+    if (hasUp    || openEdges) f.b = pipeFlux(vec2(0.0,  u_texel), fOld.b, terrainHere, surfHere, !hasUp);
+    if (hasDown  || openEdges) f.a = pipeFlux(vec2(0.0, -u_texel), fOld.a, terrainHere, surfHere, !hasDown);
 
     // a column can only push water out as fast as its own depth allows (critical flow, v <= sqrt(g*h)).
     // without this, sub-pixel thin films race ahead of the visible water and pool several columns away.
