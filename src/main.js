@@ -14,6 +14,8 @@ import { buildTerrainHeightTextureFromSampler } from './core/TerrainHeightTextur
 import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrainMesh.js';
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
 import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
+import { BuildingMeshRenderer } from './core/BuildingMeshRenderer.js';
+import { fetchOsmBuildings, prepareBuildings, rasterizeBuildingTops, buildBuildingGeometry, placeBuildingGeometry } from './geo/osmBuildings.js';
 import { initUI } from './ui.js';
 import { computeBboxFromCenter, cropHeightfieldToBbox, cropCanvasToBbox, fillNoDataInPlace, clampSeaLevelInPlace, createImageTexture } from './geo/terrainUtils.js';
 
@@ -34,6 +36,7 @@ const MASS_TOLERANCE = 1e-4;   // allowed relative drift from the starting volum
 const WATER_COLOR = [0.3, 0.6, 1.0];
 const OUTLINE_COLOR = [0.05, 0.15, 0.3];
 const TERRAIN_COLOR = [0.45, 0.35, 0.25];
+const BUILDING_COLOR = [0.72, 0.70, 0.68];
 const WATER_COLOR_MODES = { none: 0, depth: 1, velocity: 2, flux: 3 };
 
 // Top-down data views: each DOM square (index.html) becomes a scissored viewport showing one water quantity.
@@ -88,6 +91,7 @@ const fluxUpdateRenderer = new FluxUpdateRenderer(gl);
 const heightUpdateRenderer = new HeightUpdateRenderer(gl);
 const terrainMeshRenderer = new TerrainMeshRenderer(gl);
 const waterMeshRenderer = new WaterMeshRenderer(gl);
+const buildingMeshRenderer = new BuildingMeshRenderer(gl);
 
 // Simulation and terrain settings controlled by the panel.
 const params = {
@@ -118,8 +122,12 @@ const params = {
     centerLon: 6.8652,
     showImagery: true,
     showMinimaps: true,
+    useBuildings: false,      // OSM buildings raise the terrain, so water flows around them
     openBoundary: false,      // false = water stays inside (closed walls), true = water flows out of the borders
 };
+
+// Building footprints (meters from the area's south-west corner), fetched for one area and world width.
+const buildings = { list: [], geometry: null, worldWidth: 0, areaKey: '', maxHeight: 0, skipped: 0, loading: false, progress: '', error: null };
 
 const realTerrain = {
     heightfield: null,
@@ -148,9 +156,93 @@ cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
 cameraController.setMaxPickDistance(Math.max(4000, activeWorldWidth * 3));
 
 function currentSceneHeight() {
-    return (params.terrainSource === 'real' && realTerrain.heightfield)
+    const terrainHeight = (params.terrainSource === 'real' && realTerrain.heightfield)
         ? realTerrain.reliefMeters
         : params.terrainHeightScale;
+    return terrainHeight + (activeBuildings().length > 0 ? buildings.maxHeight : 0);
+}
+
+// Buildings only count when enabled and fetched for the current world width.
+function activeBuildings() {
+    return (params.useBuildings && buildings.worldWidth === activeWorldWidth) ? buildings.list : [];
+}
+
+// What the simulation sees as ground: terrain, raised to the roof height wherever a column center is inside a building.
+function getSimHeightSampler(columnCount, worldWidth) {
+    const ground = getCurrentHeightSampler(worldWidth);
+    const list = activeBuildings();
+    if (list.length === 0) return ground;
+
+    prepareBuildings(list, ground);
+    const tops = rasterizeBuildingTops(list, columnCount, worldWidth);
+    return (x, y) => {
+        const col = Math.min(columnCount - 1, Math.floor(x / worldWidth * columnCount));
+        const row = Math.min(columnCount - 1, Math.floor(y / worldWidth * columnCount));
+        return Math.max(ground(x, y), tops[row * columnCount + col]);
+    };
+}
+
+// The drawn buildings follow the same prepared footprints as the simulation terrain.
+function refreshBuildingMesh() {
+    const list = activeBuildings();
+    if (list.length === 0 || !buildings.geometry) {
+        buildingMeshRenderer.clear();
+        return;
+    }
+    buildingMeshRenderer.setGeometry(placeBuildingGeometry(buildings.geometry, list), buildings.geometry.normals);
+}
+
+const areaKey = () => `${params.centerLat}|${params.centerLon}|${activeWorldWidth}`;
+
+function setBuildings(list) {
+    buildings.list = list;
+    buildings.worldWidth = activeWorldWidth;
+    buildings.areaKey = areaKey();
+    buildings.maxHeight = list.reduce((max, b) => Math.max(max, b.height), 0);
+    buildings.geometry = buildBuildingGeometry(list, activeWorldWidth);
+    buildings.skipped = buildings.geometry.skipped; // footprints the Mireia extruder could not build
+}
+
+// Buildings that were fetched for exactly the area currently set in the panel.
+const hasBuildingsForArea = () => buildings.list.length > 0 && buildings.areaKey === areaKey();
+
+// Downloads the buildings of the current area (split into tiles, with progress in the panel). Returns true on success.
+async function loadBuildings() {
+    buildings.loading = true;
+    buildings.error = null;
+    buildings.progress = '';
+    ui.updateBuildingsStatus();
+    try {
+        const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, activeWorldWidth);
+        const list = await fetchOsmBuildings(bbox, activeWorldWidth, (done, total, note) => {
+            buildings.progress = `${done}/${total} tiles${note ? `, ${note}` : ''}`;
+            ui.updateBuildingsStatus();
+        });
+        setBuildings(list);
+        return true;
+    } catch (err) {
+        buildings.error = err.message;
+        return false;
+    } finally {
+        buildings.loading = false;
+        ui.updateBuildingsStatus();
+    }
+}
+
+// "Pull buildings" button: download, switch buildings on, rebuild the terrain with them.
+async function pullBuildings() {
+    if (state !== SimState.IDLE || buildings.loading) return;
+    if (!(await loadBuildings()) || state !== SimState.IDLE) return;
+    params.useBuildings = true;
+    rebuildTerrainAndSim();
+    ui.updateBuildingsStatus();
+}
+
+// Checkbox changed: rebuild the simulation terrain with or without the already downloaded buildings.
+function applyBuildings() {
+    if (state !== SimState.IDLE) return;
+    rebuildTerrainAndSim();
+    ui.updateBuildingsStatus();
 }
 
 function frameCamera() {
@@ -168,7 +260,7 @@ function buildSimResources(columnCount, worldWidth) {
         waterPPB: new WaterPingPongBuffer(gl, columnCount),
         fluxPPB: new FluxPingPongBuffer(gl, columnCount),
         columnRenderer: new ColumnRenderer(gl, columnCount),
-        terrainTexture: buildTerrainHeightTextureFromSampler(gl, columnCount, worldWidth, getCurrentHeightSampler(worldWidth)),
+        terrainTexture: buildTerrainHeightTextureFromSampler(gl, columnCount, worldWidth, getSimHeightSampler(columnCount, worldWidth)),
     };
 }
 
@@ -185,6 +277,7 @@ function rebuildTerrainAndSim() {
     resourceColumnCount = params.columnCount;
     idleSeedKey = null;
     applyImageryTexture();
+    refreshBuildingMesh();
 }
 
 // One imagery texture is shared by both terrain renderers; showImagery toggles it.
@@ -250,11 +343,13 @@ let state = SimState.IDLE;
 const ui = initUI({
     params,
     realTerrain,
+    buildings,
+    hasBuildings: hasBuildingsForArea,
     SimState,
     getState: () => state,
     getActiveWorldWidth: () => activeWorldWidth,
     hasImagery: () => !!imageryTexture,
-    actions: { applyImagery: applyImageryTexture, start: startSim, stop: stopSim, remove: deleteSim, toggleRain, regenerateTerrain, loadRealTerrain },
+    actions: { pullBuildings, applyBuildings, applyImagery: applyImageryTexture, start: startSim, stop: stopSim, remove: deleteSim, toggleRain, regenerateTerrain, loadRealTerrain },
 });
 
 // Load elevation and optional imagery, then apply them as one terrain update.
@@ -267,9 +362,13 @@ async function loadRealTerrain() {
 
     try {
         const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, params.worldWidth);
-        const [raw, imagery] = await Promise.all([
+        const [raw, imagery, osmBuildings] = await Promise.all([
             MireiaElevationTiles.build(bbox),
             MireiaTileMosaic.build(bbox, { urlTemplate: SATELLITE_IMAGERY_URL_TEMPLATE }),
+            // Buildings are optional: a failed request must not cancel the terrain load.
+            params.useBuildings
+                ? fetchOsmBuildings(bbox, params.worldWidth).catch((err) => { buildings.error = err.message; return null; })
+                : null,
         ]);
 
         const result = cropHeightfieldToBbox(raw, bbox);
@@ -294,6 +393,7 @@ async function loadRealTerrain() {
 
         params.terrainSource = 'real';
         activeWorldWidth = params.worldWidth;
+        if (osmBuildings) { buildings.error = null; setBuildings(osmBuildings); }
         rebuildTerrainAndSim();
         frameCamera();
         ui.syncDropRanges();
@@ -302,6 +402,7 @@ async function loadRealTerrain() {
     } finally {
         realTerrain.loading = false;
         ui.updateRealTerrainStatus();
+        ui.updateBuildingsStatus();
     }
 }
 
@@ -603,6 +704,7 @@ function frame() {
     waterMeshRenderer.setWaterColoring(colorMode, waterRangeMax);
     if (params.terrainAsMesh) {
         terrainMeshRenderer.render(viewProj, ...TERRAIN_COLOR);
+        buildingMeshRenderer.render(viewProj, ...BUILDING_COLOR); // in column mode the raised columns already show the buildings
     } else {
         sim.columnRenderer.renderTerrain(sim.terrainTexture, activeWorldWidth, ...TERRAIN_COLOR);
     }

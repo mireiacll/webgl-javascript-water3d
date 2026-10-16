@@ -11,7 +11,7 @@ function formatClock(seconds) {
     return `${pad(Math.floor(t / 3600))}:${pad(Math.floor(t / 60) % 60)}:${pad(t % 60)}`;
 }
 
-export function initUI({ params, realTerrain, SimState, getState, getActiveWorldWidth, hasImagery, actions }) {
+export function initUI({ params, realTerrain, buildings, hasBuildings, SimState, getState, getActiveWorldWidth, hasImagery, actions }) {
     const el = (id) => document.getElementById(id);
     const stateLabel = el('stateLabel');
     const startBtn = el('startBtn');
@@ -31,7 +31,7 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
         'columnCount', 'worldWidth', 'damping',
         'terrainHeightScale', 'regenerateTerrainBtn',
         'dropPositionX', 'dropPositionY', 'dropWidth', 'dropVolumeM3',
-        'centerLat', 'centerLon', 'loadRealTerrainBtn',
+        'centerLat', 'centerLon', 'loadRealTerrainBtn', 'loadBuildingsBtn',
     ];
 
     function bindSlider(id, paramKey, format = (v) => v, commitOnChange = false) {
@@ -196,6 +196,24 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
     }
     updateRealTerrainStatus();
 
+    // Buildings: the button downloads them; the checkbox switches them on/off (rebuilding the terrain).
+    const buildingsStatus = el('buildingsStatus');
+    function updateBuildingsStatus() {
+        el('useBuildings').checked = params.useBuildings;
+        if (buildings.loading) buildingsStatus.textContent = `Loading buildings${buildings.progress ? ` (${buildings.progress})` : ''}...`;
+        else if (buildings.error) buildingsStatus.textContent = `Buildings failed: ${buildings.error}`;
+        else if (params.useBuildings && buildings.list.length > 0) buildingsStatus.textContent = `${buildings.list.length} buildings (OpenStreetMap)${buildings.skipped ? `, ${buildings.skipped} could not be drawn` : ''}`;
+        else if (params.useBuildings) buildingsStatus.textContent = 'No buildings found in this area';
+        else buildingsStatus.textContent = '';
+    }
+    el('useBuildings').checked = params.useBuildings;
+    el('useBuildings').addEventListener('change', (e) => {
+        params.useBuildings = e.target.checked;
+        actions.applyBuildings();
+    });
+    el('loadBuildingsBtn').addEventListener('click', actions.pullBuildings);
+    updateBuildingsStatus();
+
     loadRealTerrainBtn.addEventListener('click', actions.loadRealTerrain);
     startBtn.addEventListener('click', actions.start);
     stopBtn.addEventListener('click', actions.stop);
@@ -219,6 +237,10 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
             el(id).disabled = state !== SimState.IDLE;
         }
         el('terrainHeightScale').disabled = el('terrainHeightScale').disabled || params.terrainSource === 'real';
+
+        // Buildings can be switched on only after they were pulled for this area; switching off is always allowed.
+        el('loadBuildingsBtn').disabled = state !== SimState.IDLE || buildings.loading;
+        el('useBuildings').disabled = state !== SimState.IDLE || buildings.loading || (!params.useBuildings && !hasBuildings());
 
         cflInfo.textContent = `CFL: ${substeps} substep${substeps === 1 ? '' : 's'} per frame (${subDt.toFixed(5)} s each)`;
         columnWidthInfo.textContent = `-> column width d = ${dropInfo.columnWidth.toFixed(3)} m`;
@@ -246,5 +268,5 @@ export function initUI({ params, realTerrain, SimState, getState, getActiveWorld
         }
     }
 
-    return { update, updateRealTerrainStatus, syncDropRanges };
+    return { update, updateRealTerrainStatus, updateBuildingsStatus, syncDropRanges };
 }
