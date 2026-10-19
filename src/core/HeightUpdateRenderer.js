@@ -38,7 +38,7 @@ export class HeightUpdateRenderer {
     }
 
     // Pour bounds are column coordinates with an exclusive end; zero rate disables pouring.
-    render(heightTexId, fluxTexId, columnCount, columnArea, dt, minHeight,
+    render(heightTexId, fluxTexId, cellAreaTexId, columnCount, columnArea, dt, minHeight,
            pourStartCol, pourStartRow, pourEndCol, pourEndRow, pourRate) {
         const gl = this.gl;
         gl.useProgram(this.shader.program);
@@ -50,6 +50,10 @@ export class HeightUpdateRenderer {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, fluxTexId);
         gl.uniform1i(this.shader.uFluxLoc, 1);
+
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, cellAreaTexId);
+        gl.uniform1i(this.shader.uCellAreaLoc, 2);
 
         gl.uniform1f(this.shader.uTexelLoc, 1.0 / columnCount);
         gl.uniform1f(this.shader.uColumnCountLoc, columnCount);

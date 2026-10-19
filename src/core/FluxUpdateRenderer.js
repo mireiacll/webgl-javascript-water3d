@@ -37,7 +37,7 @@ export class FluxUpdateRenderer {
         gl.bindVertexArray(null);
     }
 
-    render(heightTexId, fluxTexId, terrainTexId, columnCount, pipeArea, pipeLength, dt, damping, openBoundary) {
+    render(heightTexId, fluxTexId, terrainTexId, cellAreaTexId, edgeOpenTexId, columnCount, pipeArea, pipeLength, dt, damping, openBoundary) {
         const gl = this.gl;
         gl.useProgram(this.shader.program);
 
@@ -53,6 +53,14 @@ export class FluxUpdateRenderer {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, terrainTexId);
         gl.uniform1i(this.shader.uTerrainLoc, 2);
+
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, cellAreaTexId);
+        gl.uniform1i(this.shader.uCellAreaLoc, 3);
+
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, edgeOpenTexId);
+        gl.uniform1i(this.shader.uEdgeOpenLoc, 4);
 
         gl.uniform1f(this.shader.uTexelLoc, 1.0 / columnCount);
         gl.uniform1f(this.shader.uColumnCountLoc, columnCount);

@@ -6,6 +6,7 @@ layout(location = 0) out vec2 outWater; // r = water depth, g = velocity - see W
 
 uniform sampler2D u_height; // last frame's (water depth, velocity), from WaterFBO
 uniform sampler2D u_flux;   // THIS frame's flux (already updated), from FluxFBO
+uniform sampler2D u_cellArea; // open area fraction of each simulation cell
 uniform float u_texel;      // 1 / columnCount
 uniform float u_columnCount;
 uniform float u_columnArea; // d*d
@@ -35,13 +36,18 @@ void main() {
     float outflow = own.r + own.g + own.b + own.a;
 
     float hOld = texture(u_height, v_texCoord).r;
+    float openArea = texture(u_cellArea, v_texCoord).r;
+    if (openArea <= 1e-6) {
+        outWater = vec2(0.0);
+        return;
+    }
     bool inPour = all(greaterThanEqual(cell, u_pourStart)) && all(lessThan(cell, u_pourEnd));
     float pourAmount = inPour ? u_pourRate * u_dt : 0.0;
 
-    float hNew = hOld + u_dt * (inflow - outflow) / u_columnArea + pourAmount;
+    float hNew = hOld + u_dt * (inflow - outflow) / (u_columnArea * openArea) + pourAmount;
     hNew = max(hNew, u_minHeight);
 
-    float velocity = (inflow - outflow) / u_columnArea; // same quantity as before
+    float velocity = (inflow - outflow) / (u_columnArea * openArea);
 
     outWater = vec2(hNew, velocity);
 }

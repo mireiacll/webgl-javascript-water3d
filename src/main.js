@@ -15,11 +15,14 @@ import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrain
 import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
 import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
 import { BuildingMeshRenderer } from './core/BuildingMeshRenderer.js';
-import { fetchOsmBuildings, prepareBuildings, rasterizeBuildingTops, buildBuildingGeometry, placeBuildingGeometry } from './geo/osmBuildings.js';
+import { fetchOsmBuildings, prepareBuildings, rasterizeBuildingCoverage, buildBuildingGeometry, placeBuildingGeometry } from './geo/osmBuildings.js';
+import { buildBuildingMaskTextures, deleteBuildingMaskTextures } from './core/BuildingMaskTextureBuilder.js';
 import { initUI } from './ui.js';
 import { computeBboxFromCenter, cropHeightfieldToBbox, cropCanvasToBbox, fillNoDataInPlace, clampSeaLevelInPlace, createImageTexture } from './geo/terrainUtils.js';
 
 const DEFAULT_COLUMN_COUNT = 100;
+const MIN_COLUMN_COUNT = 4;
+const MAX_COLUMN_COUNT = 400;
 const DEFAULT_WORLD_WIDTH = 200.0;
 const DEFAULT_DAMPING = 0.88;
 const DEFAULT_DT = 0.02;
@@ -95,7 +98,8 @@ const buildingMeshRenderer = new BuildingMeshRenderer(gl);
 
 // Simulation and terrain settings controlled by the panel.
 const params = {
-    columnCount: DEFAULT_COLUMN_COUNT,
+    columnCount: DEFAULT_COLUMN_COUNT, // derived from cellSize and the world width (see columnCountFor)
+    cellSize: DEFAULT_WORLD_WIDTH / DEFAULT_COLUMN_COUNT, // m, what the panel slider sets
     worldWidth: DEFAULT_WORLD_WIDTH,
     damping: DEFAULT_DAMPING,
     dt: DEFAULT_DT,
@@ -167,19 +171,10 @@ function activeBuildings() {
     return (params.useBuildings && buildings.worldWidth === activeWorldWidth) ? buildings.list : [];
 }
 
-// What the simulation sees as ground: terrain, raised to the roof height wherever a column center is inside a building.
-function getSimHeightSampler(columnCount, worldWidth) {
-    const ground = getCurrentHeightSampler(worldWidth);
-    const list = activeBuildings();
-    if (list.length === 0) return ground;
-
-    prepareBuildings(list, ground);
-    const tops = rasterizeBuildingTops(list, columnCount, worldWidth);
-    return (x, y) => {
-        const col = Math.min(columnCount - 1, Math.floor(x / worldWidth * columnCount));
-        const row = Math.min(columnCount - 1, Math.floor(y / worldWidth * columnCount));
-        return Math.max(ground(x, y), tops[row * columnCount + col]);
-    };
+// The grid has N x N columns, so the column size is the world width / N. The panel sets the size in meters and
+// N follows (rounded, within the limits), which keeps the resolution when the world width changes.
+function columnCountFor(worldWidth) {
+    return Math.max(MIN_COLUMN_COUNT, Math.min(MAX_COLUMN_COUNT, Math.round(worldWidth / params.cellSize)));
 }
 
 // The drawn buildings follow the same prepared footprints as the simulation terrain.
@@ -256,11 +251,22 @@ frameCamera();
 
 // Create buffers for the grid resolution and terrain currently in use.
 function buildSimResources(columnCount, worldWidth) {
+    const ground = getCurrentHeightSampler(worldWidth);
+    const list = activeBuildings();
+    prepareBuildings(list, ground);
+    const coverage = rasterizeBuildingCoverage(list, columnCount, worldWidth);
+    const masks = buildBuildingMaskTextures(gl, columnCount, coverage);
+    let openWorldArea = 0;
+    for (const fraction of coverage.cellArea) openWorldArea += fraction;
     return {
         waterPPB: new WaterPingPongBuffer(gl, columnCount),
         fluxPPB: new FluxPingPongBuffer(gl, columnCount),
         columnRenderer: new ColumnRenderer(gl, columnCount),
-        terrainTexture: buildTerrainHeightTextureFromSampler(gl, columnCount, worldWidth, getSimHeightSampler(columnCount, worldWidth)),
+        terrainTexture: buildTerrainHeightTextureFromSampler(gl, columnCount, worldWidth, ground),
+        cellAreaTexture: masks.cellArea,
+        edgeOpenTexture: masks.edgeOpen,
+        openArea: coverage.cellArea,
+        openWorldArea,
     };
 }
 
@@ -270,6 +276,7 @@ function rebuildTerrainAndSim() {
     sim.waterPPB.dispose();
     sim.fluxPPB.dispose();
     gl.deleteTexture(sim.terrainTexture);
+    deleteBuildingMaskTextures(gl, { cellArea: sim.cellAreaTexture, edgeOpen: sim.edgeOpenTexture });
     sim = buildSimResources(params.columnCount, activeWorldWidth);
     terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth, params.columnCount);
     cameraController.setHeightSampler(getCurrentHeightSampler(activeWorldWidth));
@@ -293,8 +300,8 @@ function applyImageryTexture() {
 }
 
 // Seed the drop and clear flux before a run or while previewing in IDLE.
-function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth) {
-    const seedTexture = buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth);
+function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth, openArea) {
+    const seedTexture = buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth, openArea);
     waterPPB.current().bind();
     textureBlit.render(seedTexture);
     waterPPB.current().unbind();
@@ -309,7 +316,11 @@ function resetSimulation(waterPPB, fluxPPB, columnCount, dropStartCol, dropEndCo
 // Total water volume (m^3) read back from the current water texture.
 function measureWaterVolume() {
     const buffer = sim.waterPPB.current();
-    return buffer.readTotalDepth() * (activeWorldWidth / buffer.columnCount) ** 2;
+    const depths = buffer._readPixels();
+    const cellArea = (activeWorldWidth / buffer.columnCount) ** 2;
+    let volume = 0;
+    for (let i = 0; i < sim.openArea.length; i++) volume += depths[i * 4] * sim.openArea[i] * cellArea;
+    return volume;
 }
 
 let initialWaterVolume = 0;
@@ -393,6 +404,7 @@ async function loadRealTerrain() {
 
         params.terrainSource = 'real';
         activeWorldWidth = params.worldWidth;
+        params.columnCount = columnCountFor(activeWorldWidth);
         if (osmBuildings) { buildings.error = null; setBuildings(osmBuildings); }
         rebuildTerrainAndSim();
         frameCamera();
@@ -411,7 +423,7 @@ function startSim() {
     if (state !== SimState.IDLE) return;
     const isRain = params.mode === 'rain';
     const { dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = computeDropRegion();
-    resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, isRain ? 0 : dropDepth);
+    resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, isRain ? 0 : dropDepth, sim.openArea);
     initialWaterVolume = measureWaterVolume();
     stepCounter = 0;
     resetRainStats();
@@ -447,6 +459,7 @@ function regenerateTerrain() {
     params.terrainSource = 'procedural';
     terrainSeed++;
     activeWorldWidth = params.worldWidth;
+    params.columnCount = columnCountFor(activeWorldWidth);
     if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
     rebuildTerrainAndSim();
     frameCamera();
@@ -456,6 +469,8 @@ function regenerateTerrain() {
 
 // Convert the requested drop into grid cells and depth for its actual footprint.
 function computeDropRegion() {
+    // Before a run the grid follows the column size from the panel; while running it stays fixed.
+    if (state === SimState.IDLE) params.columnCount = columnCountFor(activeWorldWidth);
     const columnWidth = activeWorldWidth / params.columnCount;
     const half = params.dropWidth / 2;
     const clampIndex = (v) => Math.max(0, Math.min(params.columnCount, v));
@@ -467,7 +482,11 @@ function computeDropRegion() {
 
     const dropSizeX = (dropEndCol - dropStartCol) * columnWidth;
     const dropSizeY = (dropEndRow - dropStartRow) * columnWidth;
-    const dropFootprint = dropSizeX * dropSizeY;
+    let openCells = 0;
+    for (let row = dropStartRow; row < dropEndRow; row++) {
+        for (let col = dropStartCol; col < dropEndCol; col++) openCells += sim.openArea[row * params.columnCount + col];
+    }
+    const dropFootprint = openCells * columnWidth * columnWidth;
     const dropDepth = dropFootprint > 0 ? params.dropVolumeM3 / dropFootprint : 0;
 
     return { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropSizeX, dropSizeY, dropDepth };
@@ -600,6 +619,13 @@ function renderMinimaps(waterTexture, fluxTexture, sceneTop, refDepth) {
 function frame() {
     resizeCanvas();
 
+    if (state === SimState.IDLE) {
+        const desiredColumnCount = columnCountFor(activeWorldWidth);
+        if (desiredColumnCount !== resourceColumnCount) {
+            params.columnCount = desiredColumnCount;
+            rebuildTerrainAndSim();
+        }
+    }
     const dropInfo = computeDropRegion();
     const { columnWidth, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropDepth } = dropInfo;
     const pipeArea = columnWidth * columnWidth;
@@ -632,13 +658,10 @@ function frame() {
 
     // IDLE keeps the displayed drop synchronized with its controls.
     if (state === SimState.IDLE) {
-        if (params.columnCount !== resourceColumnCount) {
-            rebuildTerrainAndSim();
-        }
         // Only rebuild the seed texture when the drop actually changed.
         const seedKey = `${params.columnCount}|${dropStartCol}|${dropEndCol}|${dropStartRow}|${dropEndRow}|${seedDepth}`;
         if (seedKey !== idleSeedKey) {
-            resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, seedDepth);
+            resetSimulation(sim.waterPPB, sim.fluxPPB, params.columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, seedDepth, sim.openArea);
             idleSeedKey = seedKey;
         }
     }
@@ -653,6 +676,7 @@ function frame() {
             sim.fluxPPB.next().bind();
             fluxUpdateRenderer.render(
                 sim.waterPPB.current().getTexture(), sim.fluxPPB.current().getTexture(), sim.terrainTexture,
+                sim.cellAreaTexture, sim.edgeOpenTexture,
                 params.columnCount, pipeArea, pipeLength, subDt, substepDamping,
                 params.openBoundary ? 1 : 0,
             );
@@ -662,6 +686,7 @@ function frame() {
             sim.waterPPB.next().bind();
             heightUpdateRenderer.render(
                 sim.waterPPB.current().getTexture(), sim.fluxPPB.current().getTexture(),
+                sim.cellAreaTexture,
                 params.columnCount, columnArea, subDt, 0,
                 0, 0, params.columnCount, params.columnCount, pourRate, // rain = pour over the whole grid
             );
@@ -670,7 +695,7 @@ function frame() {
 
             rain.simTime += subDt;
             if (pourRate > 0) {
-                rain.volume += pourRate * subDt * activeWorldWidth ** 2;
+                rain.volume += pourRate * subDt * sim.openWorldArea * columnArea;
                 rain.segmentTime += subDt;
                 rain.maxDepth += pourRate * subDt;
             }
@@ -704,10 +729,10 @@ function frame() {
     waterMeshRenderer.setWaterColoring(colorMode, waterRangeMax);
     if (params.terrainAsMesh) {
         terrainMeshRenderer.render(viewProj, ...TERRAIN_COLOR);
-        buildingMeshRenderer.render(viewProj, ...BUILDING_COLOR); // in column mode the raised columns already show the buildings
     } else {
         sim.columnRenderer.renderTerrain(sim.terrainTexture, activeWorldWidth, ...TERRAIN_COLOR);
     }
+    buildingMeshRenderer.render(viewProj, ...BUILDING_COLOR);
     if (params.waterAsMesh) {
         waterMeshRenderer.render(viewProj, sim.terrainTexture, waterTexture, params.columnCount, activeWorldWidth, ...WATER_COLOR);
     } else {
@@ -726,7 +751,7 @@ function frame() {
         active: rain.active,
         simTime: rain.simTime,
         volume: rain.volume,
-        depthMm: rain.volume / (activeWorldWidth ** 2) * 1000,
+        depthMm: sim.openWorldArea > 0 ? rain.volume / (sim.openWorldArea * columnArea) * 1000 : 0,
     };
     ui.update(dropInfo, substeps, subDt, waterRangeMax, rainStats, minimapRanges);
 

@@ -11,6 +11,7 @@ export class HeightUpdateShader {
         this.texCoordLoc = gl.getAttribLocation(this.program, 'a_texCoord');
         this.uHeightLoc = gl.getUniformLocation(this.program, 'u_height');
         this.uFluxLoc = gl.getUniformLocation(this.program, 'u_flux');
+        this.uCellAreaLoc = gl.getUniformLocation(this.program, 'u_cellArea');
         this.uTexelLoc = gl.getUniformLocation(this.program, 'u_texel');
         this.uColumnCountLoc = gl.getUniformLocation(this.program, 'u_columnCount');
         this.uColumnAreaLoc = gl.getUniformLocation(this.program, 'u_columnArea');

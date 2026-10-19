@@ -1,9 +1,10 @@
 // Creates an RG32F water state with the initial drop in the specified column range.
-export function buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropAmount) {
+export function buildWaterHeightTexture(gl, columnCount, dropStartCol, dropEndCol, dropStartRow, dropEndRow, dropAmount, openArea = null) {
     const buffer = new Float32Array(columnCount * columnCount * 2);
     for (let row = dropStartRow; row < dropEndRow; row++) {
         for (let col = dropStartCol; col < dropEndCol; col++) {
-            buffer[(row * columnCount + col) * 2] = dropAmount;
+            const index = row * columnCount + col;
+            buffer[index * 2] = openArea && openArea[index] <= 1e-6 ? 0 : dropAmount;
         }
     }
 

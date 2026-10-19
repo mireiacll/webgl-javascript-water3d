@@ -218,29 +218,93 @@ function pointInRing(x, y, ring) {
     return inside;
 }
 
-// Roof height of every column whose center is inside a footprint (-Infinity elsewhere), row-major like the terrain texture.
-export function rasterizeBuildingTops(buildings, columnCount, worldWidth) {
-    const tops = new Float32Array(columnCount * columnCount).fill(-Infinity);
+// Approximate sub-cell building coverage for the cut-cell water solver. Edge channels are east, west, north, south.
+export function rasterizeBuildingCoverage(buildings, columnCount, worldWidth, samplesPerCell = 8) {
+    const cellArea = new Float32Array(columnCount * columnCount).fill(1);
+    const edgeOpen = new Float32Array(columnCount * columnCount * 4).fill(1);
+    if (buildings.length === 0) return { cellArea, edgeOpen };
+
     const cell = worldWidth / columnCount;
     const clamp = (v) => Math.max(0, Math.min(columnCount - 1, v));
-
-    for (const b of buildings) {
+    const cellBuildings = Array.from({ length: columnCount * columnCount }, () => []);
+    for (const building of buildings) {
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const p of b.ring) {
-            minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-            minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        for (const point of building.ring) {
+            minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y); maxY = Math.max(maxY, point.y);
         }
+        if (maxX < 0 || minX > worldWidth || maxY < 0 || minY > worldWidth) continue;
         const col0 = clamp(Math.floor(minX / cell)), col1 = clamp(Math.floor(maxX / cell));
         const row0 = clamp(Math.floor(minY / cell)), row1 = clamp(Math.floor(maxY / cell));
         for (let row = row0; row <= row1; row++) {
-            for (let col = col0; col <= col1; col++) {
-                if (!pointInRing((col + 0.5) * cell, (row + 0.5) * cell, b.ring)) continue;
-                const i = row * columnCount + col;
-                tops[i] = Math.max(tops[i], b.topZ);
-            }
+            for (let col = col0; col <= col1; col++) cellBuildings[row * columnCount + col].push(building);
         }
     }
-    return tops;
+
+    const coveredAt = (x, y, first, second = []) => {
+        for (const building of first) if (pointInRing(x, y, building.ring)) return true;
+        for (const building of second) if (pointInRing(x, y, building.ring)) return true;
+        return false;
+    };
+
+    const sampleArea = samplesPerCell * samplesPerCell;
+    for (let row = 0; row < columnCount; row++) {
+        for (let col = 0; col < columnCount; col++) {
+            const index = row * columnCount + col;
+            const candidates = cellBuildings[index];
+            if (candidates.length === 0) continue;
+            let covered = 0;
+            for (let sy = 0; sy < samplesPerCell; sy++) {
+                const y = (row + (sy + 0.5) / samplesPerCell) * cell;
+                for (let sx = 0; sx < samplesPerCell; sx++) {
+                    const x = (col + (sx + 0.5) / samplesPerCell) * cell;
+                    if (coveredAt(x, y, candidates)) covered++;
+                }
+            }
+            cellArea[index] = 1 - covered / sampleArea;
+        }
+    }
+
+    // Sample each shared edge once and assign the same aperture to both neighboring cells.
+    const edgeSamples = samplesPerCell * 2;
+    const epsilon = cell * 1e-5;
+    for (let row = 0; row < columnCount; row++) {
+        for (let col = 0; col <= columnCount; col++) {
+            const leftIndex = col > 0 ? row * columnCount + col - 1 : -1;
+            const rightIndex = col < columnCount ? row * columnCount + col : -1;
+            const left = leftIndex >= 0 ? cellBuildings[leftIndex] : [];
+            const right = rightIndex >= 0 ? cellBuildings[rightIndex] : [];
+            let covered = 0;
+            for (let sample = 0; sample < edgeSamples; sample++) {
+                const y = (row + (sample + 0.5) / edgeSamples) * cell;
+                const x = col * cell;
+                if (coveredAt(Math.max(0, x - epsilon), y, left, right) ||
+                    coveredAt(Math.min(worldWidth, x + epsilon), y, left, right)) covered++;
+            }
+            const open = 1 - covered / edgeSamples;
+            if (leftIndex >= 0) edgeOpen[leftIndex * 4] = open;
+            if (rightIndex >= 0) edgeOpen[rightIndex * 4 + 1] = open;
+        }
+    }
+    for (let row = 0; row <= columnCount; row++) {
+        for (let col = 0; col < columnCount; col++) {
+            const southIndex = row > 0 ? (row - 1) * columnCount + col : -1;
+            const northIndex = row < columnCount ? row * columnCount + col : -1;
+            const south = southIndex >= 0 ? cellBuildings[southIndex] : [];
+            const north = northIndex >= 0 ? cellBuildings[northIndex] : [];
+            let covered = 0;
+            for (let sample = 0; sample < edgeSamples; sample++) {
+                const x = (col + (sample + 0.5) / edgeSamples) * cell;
+                const y = row * cell;
+                if (coveredAt(x, Math.max(0, y - epsilon), south, north) ||
+                    coveredAt(x, Math.min(worldWidth, y + epsilon), south, north)) covered++;
+            }
+            const open = 1 - covered / edgeSamples;
+            if (southIndex >= 0) edgeOpen[southIndex * 4 + 2] = open;
+            if (northIndex >= 0) edgeOpen[northIndex * 4 + 3] = open;
+        }
+    }
+    return { cellArea, edgeOpen };
 }
 
 // Cuts a convex polygon (here: a triangle) to one side of x = bound or y = bound; z is interpolated at the cut.

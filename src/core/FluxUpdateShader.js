@@ -12,6 +12,8 @@ export class FluxUpdateShader {
         this.uHeightLoc = gl.getUniformLocation(this.program, 'u_height');
         this.uFluxLoc = gl.getUniformLocation(this.program, 'u_flux');
         this.uTerrainLoc = gl.getUniformLocation(this.program, 'u_terrain');
+        this.uCellAreaLoc = gl.getUniformLocation(this.program, 'u_cellArea');
+        this.uEdgeOpenLoc = gl.getUniformLocation(this.program, 'u_edgeOpen');
         this.uTexelLoc = gl.getUniformLocation(this.program, 'u_texel');
         this.uColumnCountLoc = gl.getUniformLocation(this.program, 'u_columnCount');
         this.uPipeAreaLoc = gl.getUniformLocation(this.program, 'u_pipeArea');
