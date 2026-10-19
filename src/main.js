@@ -3,6 +3,7 @@ import { FluxPingPongBuffer } from './core/FluxPingPongBuffer.js';
 import { FluxUpdateRenderer } from './core/FluxUpdateRenderer.js';
 import { HeightUpdateRenderer } from './core/HeightUpdateRenderer.js';
 import { TextureBlitRenderer } from './core/TextureBlitRenderer.js';
+import { MinimapRenderer } from './core/MinimapRenderer.js';
 import { WaterPingPongBuffer } from './core/WaterPingPongBuffer.js';
 import { buildWaterHeightTexture } from './core/WaterHeightTextureBuilder.js';
 import { Camera } from './camera/Camera.js';
@@ -12,13 +13,12 @@ import { TerrainMeshRenderer } from './core/TerrainMeshRenderer.js';
 import { WaterMeshRenderer } from './core/WaterMeshRenderer.js';
 import { buildTerrainHeightTextureFromSampler } from './core/TerrainHeightTextureBuilder.js';
 import { proceduralHeightSampler, heightfieldSampler } from './geo/MireiaTerrainMesh.js';
-import { MireiaElevationTiles } from './geo/MireiaElevationTiles.js';
-import { MireiaTileMosaic } from './geo/MireiaTileMosaic.js';
 import { BuildingMeshRenderer } from './core/BuildingMeshRenderer.js';
-import { fetchOsmBuildings, prepareBuildings, rasterizeBuildingCoverage, buildBuildingGeometry, placeBuildingGeometry } from './geo/osmBuildings.js';
+import { prepareBuildings, rasterizeBuildingCoverage, buildBuildingGeometry, placeBuildingGeometry } from './geo/osmBuildings.js';
 import { buildBuildingMaskTextures, deleteBuildingMaskTextures } from './core/BuildingMaskTextureBuilder.js';
 import { initUI } from './ui.js';
-import { computeBboxFromCenter, cropHeightfieldToBbox, cropCanvasToBbox, fillNoDataInPlace, clampSeaLevelInPlace, createImageTexture } from './geo/terrainUtils.js';
+import { createImageTexture } from './geo/terrainUtils.js';
+import { TerrainController } from './terrain/TerrainController.js';
 
 const DEFAULT_COLUMN_COUNT = 100;
 const MIN_COLUMN_COUNT = 4;
@@ -32,7 +32,6 @@ const DEFAULT_TERRAIN_HEIGHT_SCALE = 10.0;
 const DEFAULT_TERRAIN_SEED = 1;
 const DEFAULT_DROP_WIDTH = 20.0;
 const DEFAULT_DROP_VOLUME_M3 = 800;
-const SATELLITE_IMAGERY_URL_TEMPLATE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 // Water mass check (debug). Every readback stalls the GPU: 1 = every substep, 0 = off.
 const MASS_CHECK_EVERY_N_STEPS = 0;
 const MASS_TOLERANCE = 1e-4;   // allowed relative drift from the starting volume
@@ -42,22 +41,10 @@ const TERRAIN_COLOR = [0.45, 0.35, 0.25];
 const BUILDING_COLOR = [0.72, 0.70, 0.68];
 const WATER_COLOR_MODES = { none: 0, depth: 1, velocity: 2, flux: 3 };
 
-// Top-down data views: each DOM square (index.html) becomes a scissored viewport showing one water quantity.
-const MINIMAPS = [
-    { elId: 'minimapDepth', mode: 'depth' },
-    { elId: 'minimapVelocity', mode: 'velocity' },
-    { elId: 'minimapFlux', mode: 'flux' },
-].map((p) => ({ ...p, el: document.getElementById(p.elId) }));
-const MINIMAP_CLEAR_COLOR = [0.05, 0.05, 0.08];
-// Real flows stay well below critical speed, so the auto legend spans this fraction of it.
-const AUTO_RANGE_FRACTION = 0.5;
 // Rain has no starting drop to size substeps from, so the CFL depth comes from a periodic max-depth readback.
 const MAX_DEPTH_READ_EVERY_N_FRAMES = 30;
 // Auto legend: measure the real water now and then instead of only estimating from the starting drop.
 const AUTO_RANGE_READ_EVERY_N_FRAMES = 30;
-const AUTO_RANGE_PERCENTILE = 0.95;  // of the wet columns; 1.0 = true maximum (one extreme column can dominate it)
-const AUTO_RANGE_FALL_RATE = 0.2;    // the legend max drops this fraction of the way to a lower measurement each read (it rises instantly)
-const AUTO_RANGE_WET_DEPTH = 1e-3;   // m, columns shallower than this are ignored (same threshold as the velocity shader)
 const MIN_RAIN_CFL_DEPTH = 0.05;     // m, floor while the ground is still nearly dry
 const RAIN_CFL_DEPTH_MARGIN = 1.25;  // headroom for depth growth between readbacks
 const MM_PER_HOUR_TO_M_PER_S = 1 / 3.6e6;
@@ -198,48 +185,6 @@ function setBuildings(list) {
     buildings.skipped = buildings.geometry.skipped; // footprints the Mireia extruder could not build
 }
 
-// Buildings that were fetched for exactly the area currently set in the panel.
-const hasBuildingsForArea = () => buildings.list.length > 0 && buildings.areaKey === areaKey();
-
-// Downloads the buildings of the current area (split into tiles, with progress in the panel). Returns true on success.
-async function loadBuildings() {
-    buildings.loading = true;
-    buildings.error = null;
-    buildings.progress = '';
-    ui.updateBuildingsStatus();
-    try {
-        const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, activeWorldWidth);
-        const list = await fetchOsmBuildings(bbox, activeWorldWidth, (done, total, note) => {
-            buildings.progress = `${done}/${total} tiles${note ? `, ${note}` : ''}`;
-            ui.updateBuildingsStatus();
-        });
-        setBuildings(list);
-        return true;
-    } catch (err) {
-        buildings.error = err.message;
-        return false;
-    } finally {
-        buildings.loading = false;
-        ui.updateBuildingsStatus();
-    }
-}
-
-// "Pull buildings" button: download, switch buildings on, rebuild the terrain with them.
-async function pullBuildings() {
-    if (state !== SimState.IDLE || buildings.loading) return;
-    if (!(await loadBuildings()) || state !== SimState.IDLE) return;
-    params.useBuildings = true;
-    rebuildTerrainAndSim();
-    ui.updateBuildingsStatus();
-}
-
-// Checkbox changed: rebuild the simulation terrain with or without the already downloaded buildings.
-function applyBuildings() {
-    if (state !== SimState.IDLE) return;
-    rebuildTerrainAndSim();
-    ui.updateBuildingsStatus();
-}
-
 function frameCamera() {
     const sceneHeight = currentSceneHeight();
     camera.lookAt(
@@ -289,6 +234,16 @@ function rebuildTerrainAndSim() {
 
 // One imagery texture is shared by both terrain renderers; showImagery toggles it.
 let imageryTexture = null;
+function replaceImagery(canvasImage) {
+    if (imageryTexture) gl.deleteTexture(imageryTexture);
+    imageryTexture = createImageTexture(gl, canvasImage);
+}
+
+function clearImagery() {
+    if (imageryTexture) gl.deleteTexture(imageryTexture);
+    imageryTexture = null;
+}
+
 function applyImageryTexture() {
     if (imageryTexture && params.showImagery) {
         terrainMeshRenderer.setImageryTexture(imageryTexture);
@@ -349,74 +304,59 @@ let sim = buildSimResources(params.columnCount, activeWorldWidth);
 terrainMeshRenderer.buildFromSampler(getCurrentHeightSampler(activeWorldWidth), activeWorldWidth, params.columnCount);
 let resourceColumnCount = params.columnCount;
 let state = SimState.IDLE;
+const minimapRenderer = new MinimapRenderer(gl, canvas, {
+    params,
+    terrainMeshRenderer,
+    waterMeshRenderer,
+    waterColorModes: WATER_COLOR_MODES,
+    terrainColor: TERRAIN_COLOR,
+    waterColor: WATER_COLOR,
+    gravity: GRAVITY,
+    getWorldWidth: () => activeWorldWidth,
+    getTerrainTexture: () => sim.terrainTexture,
+    getColumnCount: () => params.columnCount,
+});
+
+const terrainController = new TerrainController({
+    params,
+    buildings,
+    realTerrain,
+    getState: () => state,
+    idleState: SimState.IDLE,
+    getActiveWorldWidth: () => activeWorldWidth,
+    setActiveWorldWidth: (width) => { activeWorldWidth = width; },
+    columnCountFor,
+    setBuildings,
+    rebuildTerrainAndSim,
+    frameCamera,
+    replaceImagery,
+    clearImagery,
+    getUI: () => ui,
+    incrementTerrainSeed: () => { terrainSeed++; },
+});
 
 // Control panel lives in ui.js; it reads/writes params and calls the actions below.
 const ui = initUI({
     params,
     realTerrain,
     buildings,
-    hasBuildings: hasBuildingsForArea,
+    hasBuildings: terrainController.hasBuildingsForArea,
     SimState,
     getState: () => state,
     getActiveWorldWidth: () => activeWorldWidth,
     hasImagery: () => !!imageryTexture,
-    actions: { pullBuildings, applyBuildings, applyImagery: applyImageryTexture, start: startSim, stop: stopSim, remove: deleteSim, toggleRain, regenerateTerrain, loadRealTerrain },
+    actions: {
+        pullBuildings: () => terrainController.pullBuildings(),
+        applyBuildings: () => terrainController.applyBuildings(),
+        applyImagery: applyImageryTexture,
+        start: startSim,
+        stop: stopSim,
+        remove: deleteSim,
+        toggleRain,
+        regenerateTerrain: () => terrainController.regenerateTerrain(),
+        loadRealTerrain: () => terrainController.loadRealTerrain(),
+    },
 });
-
-// Load elevation and optional imagery, then apply them as one terrain update.
-async function loadRealTerrain() {
-    if (state !== SimState.IDLE || realTerrain.loading) return;
-
-    realTerrain.loading = true;
-    realTerrain.error = null;
-    ui.updateRealTerrainStatus();
-
-    try {
-        const bbox = computeBboxFromCenter(params.centerLon, params.centerLat, params.worldWidth);
-        const [raw, imagery, osmBuildings] = await Promise.all([
-            MireiaElevationTiles.build(bbox),
-            MireiaTileMosaic.build(bbox, { urlTemplate: SATELLITE_IMAGERY_URL_TEMPLATE }),
-            // Buildings are optional: a failed request must not cancel the terrain load.
-            params.useBuildings
-                ? fetchOsmBuildings(bbox, params.worldWidth).catch((err) => { buildings.error = err.message; return null; })
-                : null,
-        ]);
-
-        const result = cropHeightfieldToBbox(raw, bbox);
-        fillNoDataInPlace(result.heightfield, result.gridWidth, result.gridHeight);
-        clampSeaLevelInPlace(result.heightfield);
-
-        let min = Infinity, max = -Infinity;
-        for (const h of result.heightfield) {
-            if (h < min) min = h;
-            if (h > max) max = h;
-        }
-        const normalized = new Float32Array(result.heightfield.length);
-        for (let i = 0; i < result.heightfield.length; i++) normalized[i] = result.heightfield[i] - min;
-
-        realTerrain.heightfield = normalized;
-        realTerrain.gridWidth = result.gridWidth;
-        realTerrain.gridHeight = result.gridHeight;
-        realTerrain.reliefMeters = max - min;
-
-        if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
-        imageryTexture = createImageTexture(gl, cropCanvasToBbox(imagery.canvas, imagery.zoom, bbox));
-
-        params.terrainSource = 'real';
-        activeWorldWidth = params.worldWidth;
-        params.columnCount = columnCountFor(activeWorldWidth);
-        if (osmBuildings) { buildings.error = null; setBuildings(osmBuildings); }
-        rebuildTerrainAndSim();
-        frameCamera();
-        ui.syncDropRanges();
-    } catch (err) {
-        realTerrain.error = err.message;
-    } finally {
-        realTerrain.loading = false;
-        ui.updateRealTerrainStatus();
-        ui.updateBuildingsStatus();
-    }
-}
 
 // Start resets the drop; stop freezes it; delete returns to the live preview.
 function startSim() {
@@ -427,7 +367,7 @@ function startSim() {
     initialWaterVolume = measureWaterVolume();
     stepCounter = 0;
     resetRainStats();
-    resetMeasuredRange();
+    minimapRenderer.resetMeasuredRange();
     rain.active = isRain;
     console.log(`[mass] start: measured ${initialWaterVolume.toFixed(3)} m^3, expected ${(isRain ? 0 : params.dropVolumeM3).toFixed(3)} m^3`);
     state = SimState.RUNNING;
@@ -451,21 +391,8 @@ function deleteSim() {
     state = SimState.IDLE;
     idleSeedKey = null;
     resetRainStats();
-    resetMeasuredRange();
+    minimapRenderer.resetMeasuredRange();
 }
-
-function regenerateTerrain() {
-    if (state !== SimState.IDLE) return;
-    params.terrainSource = 'procedural';
-    terrainSeed++;
-    activeWorldWidth = params.worldWidth;
-    params.columnCount = columnCountFor(activeWorldWidth);
-    if (imageryTexture) { gl.deleteTexture(imageryTexture); imageryTexture = null; }
-    rebuildTerrainAndSim();
-    frameCamera();
-    ui.syncDropRanges();
-}
-
 
 // Convert the requested drop into grid cells and depth for its actual footprint.
 function computeDropRegion() {
@@ -494,127 +421,6 @@ function computeDropRegion() {
 
 
 // Latest measured legend max per quantity (0 = nothing measured yet, so the estimate is used).
-const measuredRange = { depth: 0, velocity: 0, flux: 0 };
-function resetMeasuredRange() {
-    measuredRange.depth = measuredRange.velocity = measuredRange.flux = 0;
-}
-
-function percentileOf(sorted, p) {
-    return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))] : 0;
-}
-
-// Read water + flux back from the GPU and measure depth, velocity and flux of the wet columns.
-// Velocity and flux use the same formulas as cellMetric() in waterMeshVertex.glsl, so the legend matches the colors.
-function updateMeasuredRange(columnWidth) {
-    const n = params.columnCount;
-    const water = sim.waterPPB.current()._readPixels();
-    const flux = sim.fluxPPB.current().readPixels();
-    const depths = new Float32Array(n * n);
-    const velocities = new Float32Array(n * n);
-    const fluxes = new Float32Array(n * n);
-    let wet = 0;
-
-    for (let row = 0; row < n; row++) {
-        for (let col = 0; col < n; col++) {
-            const i = row * n + col;
-            const h = water[i * 4];
-            if (h <= AUTO_RANGE_WET_DEPTH) continue;
-
-            const fromLeft  = col > 0     ? flux[(i - 1) * 4]     : 0;
-            const fromRight = col < n - 1 ? flux[(i + 1) * 4 + 1] : 0;
-            const fromDown  = row > 0     ? flux[(i - n) * 4 + 2] : 0;
-            const fromUp    = row < n - 1 ? flux[(i + n) * 4 + 3] : 0;
-            const qx = 0.5 * (fromLeft - flux[i * 4 + 1] + flux[i * 4]     - fromRight) / columnWidth;
-            const qy = 0.5 * (fromDown - flux[i * 4 + 3] + flux[i * 4 + 2] - fromUp)    / columnWidth;
-            const q = Math.hypot(qx, qy);
-
-            depths[wet] = h;
-            fluxes[wet] = q;
-            velocities[wet] = Math.min(q / h, Math.sqrt(GRAVITY * h));
-            wet++;
-        }
-    }
-
-    const targets = {
-        depth: percentileOf(depths.subarray(0, wet).sort(), AUTO_RANGE_PERCENTILE),
-        velocity: percentileOf(velocities.subarray(0, wet).sort(), AUTO_RANGE_PERCENTILE),
-        flux: percentileOf(fluxes.subarray(0, wet).sort(), AUTO_RANGE_PERCENTILE),
-    };
-    for (const mode of Object.keys(targets)) {
-        const target = targets[mode];
-        if (!(target > 0)) continue; // nothing to measure (e.g. still at rest): keep what we have
-        const current = measuredRange[mode];
-        // Rise at once so colors never saturate; fall gradually so the legend doesn't flicker.
-        measuredRange[mode] = (current <= 0 || target > current)
-            ? target
-            : current + (target - current) * AUTO_RANGE_FALL_RATE;
-    }
-}
-
-// Auto legend max: the measured value if there is one, otherwise estimated from the reference depth (drop depth, or measured rain depth).
-function autoWaterRange(mode, refDepth) {
-    if (measuredRange[mode] > 0) return measuredRange[mode]; // real measurement, once one exists
-    if (refDepth <= 0) return 1;
-    const critical = Math.sqrt(GRAVITY * refDepth); // shallow-water wave speed
-    if (mode === 'depth') return refDepth;
-    if (mode === 'velocity') return AUTO_RANGE_FRACTION * critical;   // m/s
-    if (mode === 'flux') return AUTO_RANGE_FRACTION * critical * refDepth; // m^2/s
-    return 1;
-}
-
-// Legend max for one quantity: the auto estimate, or the value typed in for that quantity.
-function rangeFor(mode, refDepth) {
-    const r = params.waterRanges[mode];
-    if (!r) return 1;
-    return r.auto ? Math.max(1e-6, autoWaterRange(mode, refDepth)) : r.max;
-}
-
-// Orthographic view straight down the tank. Depth follows the main camera's reversed convention
-// (nearer = larger, depthFunc GEQUAL), so higher z maps to larger clip z.
-function topDownMatrix(worldWidth, zLo, zHi) {
-    const range = zHi - zLo;
-    return new Float32Array([
-        2 / worldWidth, 0, 0, 0,
-        0, 2 / worldWidth, 0, 0,
-        0, 0, 2 / range, 0,
-        -1, -1, -(1 + 2 * zLo / range), 1,
-    ]);
-}
-
-// Draw terrain + colored water from above into each minimap square. Returns each panel's legend max.
-function renderMinimaps(waterTexture, fluxTexture, sceneTop, refDepth) {
-    const canvasRect = canvas.getBoundingClientRect();
-    const scale = canvas.width / canvasRect.width;
-    const viewProj = topDownMatrix(activeWorldWidth, -1, sceneTop);
-    const ranges = {};
-
-    waterMeshRenderer.setFluxTexture(fluxTexture);
-    gl.enable(gl.SCISSOR_TEST);
-    for (const { el, mode } of MINIMAPS) {
-        const range = rangeFor(mode, refDepth);
-        ranges[mode] = range;
-
-        const r = el.getBoundingClientRect();
-        const w = Math.round(r.width * scale);
-        const h = Math.round(r.height * scale);
-        if (w < 2 || h < 2) continue;
-        const x = Math.round((r.left - canvasRect.left) * scale);
-        const y = Math.round(canvas.height - (r.bottom - canvasRect.top) * scale);
-
-        gl.viewport(x, y, w, h);
-        gl.scissor(x, y, w, h);
-        gl.clearColor(...MINIMAP_CLEAR_COLOR, 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-        terrainMeshRenderer.render(viewProj, ...TERRAIN_COLOR);
-        waterMeshRenderer.setWaterColoring(WATER_COLOR_MODES[mode], range);
-        waterMeshRenderer.render(viewProj, sim.terrainTexture, waterTexture, params.columnCount, activeWorldWidth, ...WATER_COLOR);
-    }
-    gl.disable(gl.SCISSOR_TEST);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    return ranges;
-}
-
 // Advance simulation state, render the scene, then schedule the next frame.
 function frame() {
     resizeCanvas();
@@ -645,7 +451,9 @@ function frame() {
     // Auto legend: only measure when something on screen actually uses it.
     if (state === SimState.RUNNING && rain.frames % AUTO_RANGE_READ_EVERY_N_FRAMES === 0 &&
         (params.waterColorMode !== 'none' || params.showMinimaps)) {
-        updateMeasuredRange(columnWidth);
+        minimapRenderer.updateMeasuredRange(
+            columnWidth, params.columnCount, sim.waterPPB.current(), sim.fluxPPB.current(),
+        );
     }
 
     // Choose enough substeps to respect the shallow-water CFL limit.
@@ -721,7 +529,7 @@ function frame() {
     sim.columnRenderer.setGapFraction(params.showOutline ? 0.1 : 0.0);
     const waterTexture = sim.waterPPB.current().getTexture();
     const colorMode = WATER_COLOR_MODES[params.waterColorMode] ?? 0;
-    const waterRangeMax = rangeFor(params.waterColorMode, refDepth);
+    const waterRangeMax = minimapRenderer.rangeFor(params.waterColorMode, refDepth);
     const fluxTexture = sim.fluxPPB.current().getTexture();
     sim.columnRenderer.setFluxTexture(fluxTexture);
     sim.columnRenderer.setWaterColoring(colorMode, waterRangeMax);
@@ -744,7 +552,7 @@ function frame() {
 
     // After the main view, since this reuses the water mesh renderer with its own coloring.
     const minimapRanges = params.showMinimaps
-        ? renderMinimaps(waterTexture, fluxTexture, maxSceneHeight + refDepth, refDepth)
+        ? minimapRenderer.render(waterTexture, fluxTexture, maxSceneHeight + refDepth, refDepth)
         : null;
 
     const rainStats = {

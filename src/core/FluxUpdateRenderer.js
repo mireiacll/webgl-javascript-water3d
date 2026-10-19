@@ -1,40 +1,12 @@
 import { FluxUpdateShader } from './FluxUpdateShader.js';
+import { createFullscreenQuad } from './FullscreenQuad.js';
 
 // Runs the flux shader once per grid cell using a full-screen quad.
 export class FluxUpdateRenderer {
     constructor(gl) {
         this.gl = gl;
         this.shader = new FluxUpdateShader(gl);
-        this._buildQuad();
-    }
-
-    _buildQuad() {
-        const gl = this.gl;
-        const data = new Float32Array([
-            -1, -1, 0,  0, 0,
-             1, -1, 0,  1, 0,
-             1,  1, 0,  1, 1,
-            -1, -1, 0,  0, 0,
-             1,  1, 0,  1, 1,
-            -1,  1, 0,  0, 1,
-        ]);
-
-        this.vao = gl.createVertexArray();
-        gl.bindVertexArray(this.vao);
-
-        this.vertexBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-
-        const stride = 5 * Float32Array.BYTES_PER_ELEMENT;
-        const { positionLoc, texCoordLoc } = this.shader;
-        gl.enableVertexAttribArray(positionLoc);
-        gl.vertexAttribPointer(positionLoc, 3, gl.FLOAT, false, stride, 0);
-
-        gl.enableVertexAttribArray(texCoordLoc);
-        gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
-
-        gl.bindVertexArray(null);
+        this.vao = createFullscreenQuad(gl, this.shader.positionLoc, this.shader.texCoordLoc);
     }
 
     render(heightTexId, fluxTexId, terrainTexId, cellAreaTexId, edgeOpenTexId, columnCount, pipeArea, pipeLength, dt, damping, openBoundary) {
